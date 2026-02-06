@@ -1,0 +1,50 @@
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*.pyd
+*.so
+*.egg-info/
+.eggs/
+*.egg
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ===== Virtual env =====
+.venv/
+venv/
+env/
+ENV/
+
+# ===== OS / Editor =====
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# ===== Logs / Outputs (your project) =====
+outputs/
+# 如果你想保留目录结构但不提交内容，可以改成：
+# outputs/*
+# !outputs/.gitkeep
+# !outputs/checkpoints/.gitkeep
+# !outputs/logs/.gitkeep
+# !outputs/visual/.gitkeep
+
+# ===== Datasets (do not commit) =====
+data/
+# 如果你想保留 data 目录但不提交内容，可以改成：
+# data/*
+# !data/.gitkeep
+
+# ===== Checkpoints / Model files =====
+*.pth
+*.pt
+*.ckpt
+*.onnx
+
+# ===== Training artifacts =====
+*.log
+runs/
+wandb/
+tensorboard/
