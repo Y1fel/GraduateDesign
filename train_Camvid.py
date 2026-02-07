@@ -1,29 +1,24 @@
 from __future__ import annotations
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Dict, List, Tuple
+from PIL import Image
+from torch.utils.data import Dataset, DataLoader
 
 import csv
 import math
 import random
 import time
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Dict, List, Tuple
-
 import numpy as np
-from PIL import Image
-
 import torch
 import torch.nn as nn
-from torch.utils.data import Dataset, DataLoader
 
-# your model
 from src.models.deeplabv3_plus import DeepLabV3Plus
+from src.utils.Id2Mask import load_class_dict_csv, id_mask_to_color, color_mask_to_id
 
 RGB = Tuple[int, int, int]
 
-
-# -------------------------
 # Config
-# -------------------------
 @dataclass
 class TrainConfig:
     data_root = Path("data/camvid")
@@ -52,10 +47,7 @@ class TrainConfig:
 
     seed = 42
 
-
-# -------------------------
 # Reproducibility & dirs
-# -------------------------
 def set_seed(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
@@ -68,97 +60,7 @@ def ensure_dirs(cfg: TrainConfig) -> None:
     cfg.log_dir.mkdir(parents=True, exist_ok=True)
     cfg.vis_dir.mkdir(parents=True, exist_ok=True)
 
-
-# -------------------------
-# Mask codec (RGB tuple compare, no RGB->int)
-# -------------------------
-def load_class_dict_csv(csv_path: Path) -> tuple[Dict[RGB, int], List[RGB], List[str]]:
-    """
-    Read class_dict.csv with header: name,r,g,b
-    Returns:
-      color2id: {(r,g,b) -> class_id}
-      id2color: [(r,g,b), ...]
-      id2name : [name, ...]
-    """
-    if not csv_path.exists():
-        raise FileNotFoundError(f"class_dict.csv not found: {csv_path}")
-
-    id2color: List[RGB] = []
-    id2name: List[str] = []
-
-    with csv_path.open("r", newline="", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-
-        def find_key(target: str) -> str | None:
-            for k in (reader.fieldnames or []):
-                if k.strip().lower() == target:
-                    return k
-            return None
-
-        nk = find_key("name")
-        rk = find_key("r")
-        gk = find_key("g")
-        bk = find_key("b")
-        if rk is None or gk is None or bk is None:
-            raise ValueError("class_dict.csv must contain columns r,g,b (and optional name).")
-
-        for row in reader:
-            name = (row[nk].strip() if nk else "")
-            r = int(str(row[rk]).strip())
-            g = int(str(row[gk]).strip())
-            b = int(str(row[bk]).strip())
-            id2name.append(name)
-            id2color.append((r, g, b))
-
-    if len(id2color) == 0:
-        raise ValueError("No rows read from class_dict.csv")
-
-    color2id: Dict[RGB, int] = {}
-    for cid, rgb in enumerate(id2color):
-        if rgb in color2id:
-            raise ValueError(f"Duplicate RGB {rgb} in class_dict.csv")
-        color2id[rgb] = cid
-
-    return color2id, id2color, id2name
-
-
-def color_mask_to_id(mask_rgb: Image.Image, color2id: Dict[RGB, int], ignore_index: int) -> np.ndarray:
-    """
-    RGB mask -> (H,W) class id (uint8). Unknown colors -> ignore_index.
-    Uses direct (r,g,b) tuple comparison.
-    """
-    arr = np.array(mask_rgb.convert("RGB"), dtype=np.uint8)  # (H,W,3)
-    h, w, _ = arr.shape
-    out = np.full((h, w), ignore_index, dtype=np.uint8)
-
-    for (r, g, b), cid in color2id.items():
-        m = (arr[:, :, 0] == r) & (arr[:, :, 1] == g) & (arr[:, :, 2] == b)
-        out[m] = cid
-
-    return out
-
-
-def id_mask_to_color(mask_id: np.ndarray, id2color: List[RGB], ignore_index: int, ignore_color: RGB = (0, 0, 0)) -> np.ndarray:
-    """
-    (H,W) class id -> (H,W,3) RGB
-    """
-    mid = np.asarray(mask_id, dtype=np.int64)
-    if mid.ndim != 2:
-        raise ValueError(f"mask_id must be (H,W), got {mid.shape}")
-
-    h, w = mid.shape
-    out = np.zeros((h, w, 3), dtype=np.uint8)
-
-    for cid, (r, g, b) in enumerate(id2color):
-        out[mid == cid] = (r, g, b)
-
-    out[mid == ignore_index] = ignore_color
-    return out
-
-
-# -------------------------
 # Image normalization
-# -------------------------
 def normalize_img(img: torch.Tensor) -> torch.Tensor:
     """
     ImageNet normalization for pretrained ResNet.
@@ -168,10 +70,7 @@ def normalize_img(img: torch.Tensor) -> torch.Tensor:
     std = torch.tensor([0.229, 0.224, 0.225], device=img.device).view(3, 1, 1)
     return (img - mean) / std
 
-
-# -------------------------
 # Dataset
-# -------------------------
 class CamVidDataset(Dataset):
     def __init__(self, root: Path, split_file: str, cfg: TrainConfig, color2id: Dict[RGB, int], training: bool):
         self.root = root
@@ -212,13 +111,13 @@ class CamVidDataset(Dataset):
         mask_rgb = Image.open(mask_path).convert("RGB")
 
         # resize
-        img = img.resize((self.cfg.resize_w, self.cfg.resize_h), resample=Image.BILINEAR)
-        mask_rgb = mask_rgb.resize((self.cfg.resize_w, self.cfg.resize_h), resample=Image.NEAREST)
+        img = img.resize((self.cfg.resize_w, self.cfg.resize_h), resample=Image.Resampling.BILINEAR)
+        mask_rgb = mask_rgb.resize((self.cfg.resize_w, self.cfg.resize_h), resample=Image.Resampling.NEAREST)
 
         # hflip aug
         if self.training and random.random() < self.cfg.hflip_prob:
-            img = img.transpose(Image.FLIP_LEFT_RIGHT)
-            mask_rgb = mask_rgb.transpose(Image.FLIP_LEFT_RIGHT)
+            img = img.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
+            mask_rgb = mask_rgb.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
 
         # to tensor
         img_t = torch.from_numpy(np.array(img).transpose(2, 0, 1)).float() / 255.0  # (3,H,W)
@@ -229,10 +128,7 @@ class CamVidDataset(Dataset):
 
         return img_t, mask_t, name
 
-
-# -------------------------
 # mIoU
-# -------------------------
 @torch.no_grad()
 def update_confusion_matrix(conf: torch.Tensor, pred: torch.Tensor, target: torch.Tensor, num_classes: int, ignore_index: int) -> None:
     pred = pred.view(-1)
@@ -265,10 +161,8 @@ def compute_iou_from_conf(conf: torch.Tensor) -> tuple[np.ndarray, float]:
     return iou, miou
 
 
-# -------------------------
-# Train / Eval
-# -------------------------
-def train_one_epoch(model: nn.Module, loader: DataLoader, optimizer, criterion, device: torch.device) -> float:
+# Train
+def train(model: nn.Module, loader: DataLoader, optimizer, criterion, device: torch.device) -> float:
     model.train()
     total_loss = 0.0
     n = 0
@@ -412,7 +306,7 @@ def main():
     for epoch in range(1, cfg.epochs + 1):
         t0 = time.time()
 
-        train_loss = train_one_epoch(model, train_loader, optimizer, criterion, device)
+        train_loss = train(model, train_loader, optimizer, criterion, device)
         _iou, val_miou = evaluate(model, val_loader, device, cfg)
 
         dt = time.time() - t0
