@@ -13,14 +13,6 @@ RGB = Tuple[int, int, int]
 
 
 class CamVidFolderDataset(Dataset):
-    """
-    期望目录：
-      root/
-        train/         train_labels/
-        val/           val_labels/
-        test/          test_labels/
-        class_dict.csv
-    """
     def __init__(
         self,
         root: Path,
@@ -43,7 +35,6 @@ class CamVidFolderDataset(Dataset):
         self.ignore_index = ignore_index
         self.training = training
 
-        # ✅ 保留你喜欢的写法（不放 config 展开）
         self.train_images_dir = root / "train"
         self.train_masks_dir = root / "train_labels"
         self.val_images_dir = root / "val"

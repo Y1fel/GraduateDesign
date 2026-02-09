@@ -19,7 +19,7 @@ def save_predictions_triplet(
     id2color: List[RGB],
     ignore_index: int,
     epoch: int,
-    max_items: int = 8,
+    max_items: int = 25,
 ) -> None:
     model.eval()
     epoch_dir = out_dir / f"epoch_{epoch:03d}"

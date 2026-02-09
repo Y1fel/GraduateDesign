@@ -14,6 +14,7 @@ from src.eval.mIoU import compute_miou
 from src.models.deeplabv3_plus import DeepLabV3Plus
 from src.utils.Id2Mask import load_class_dict_csv
 from src.viz.visualizer import save_predictions_triplet
+from src.losses.composite import CrossEntropyDiceLoss
 
 
 @dataclass
@@ -25,14 +26,14 @@ class TrainConfig:
     epochs: int = 50
     batch_size: int = 4
     num_workers: int = 4
-    lr: float = 1e-4
+    lr_0: float = 1e-4
     weight_decay: float = 1e-4
 
     output_stride: int = 16
     backbone_pretrained: bool = True
 
-    resize_h: int = 360
-    resize_w: int = 480
+    resize_h: int = 450
+    resize_w: int = 600
     hflip_prob: float = 0.5
 
     save_vis_every: int = 10
@@ -67,6 +68,9 @@ def main() -> None:
     cfg = TrainConfig()
     set_seed(cfg.seed)
 
+    N: int = 369
+    steps = cfg.epochs * (N // cfg.batch_size)
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[INFO] device = {device}")
 
@@ -79,6 +83,7 @@ def main() -> None:
     out.save_config(cfg)
     out.init_metrics()
     print(f"[INFO] run_dir = {out.run_dir}")
+
 
     # datasets (不需要 splits，直接用文件夹)
     train_ds = CamVidFolderDataset(
@@ -126,8 +131,14 @@ def main() -> None:
         output_stride=cfg.output_stride,
     ).to(device)
 
-    criterion = nn.CrossEntropyLoss(ignore_index=cfg.ignore_index)
-    optimizer = torch.optim.Adam(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
+    criterion = CrossEntropyDiceLoss(
+        num_classes=cfg.num_classes,
+        ignore_index=cfg.ignore_index,
+        ce_weight=1.0,
+        dice_weight=0.5,
+        class_weights=None,
+    )
+    optimizer = torch.optim.Adam(model.parameters(), lr=cfg.lr_0, weight_decay=cfg.weight_decay)
 
     best_miou = -1.0
 
@@ -139,6 +150,9 @@ def main() -> None:
 
         dt = time.time() - t0
         print(f"[EPOCH {epoch:03d}/{cfg.epochs}] loss={train_loss:.4f}  val_mIoU={val_miou:.4f}  time={dt:.1f}s")
+        if device.type == "cuda":
+            peak = torch.cuda.max_memory_allocated() / 1024 ** 3
+            print(f"[MEM] peak_allocated = {peak:.2f} GB")
 
         out.append_metrics(epoch, train_loss, val_miou, dt)
 
@@ -168,6 +182,11 @@ def main() -> None:
                 epoch=epoch,
                 max_items=cfg.save_vis_max_items,
             )
+
+
+        lr_1: float = cfg.lr_0 * (1 - epoch / steps)**0.9 # poly LR schedule
+        for pg in optimizer.param_groups:
+            pg["lr"] = lr_1
 
     print("[DONE] Training finished.")
 
