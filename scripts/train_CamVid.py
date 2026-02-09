@@ -38,7 +38,7 @@ class TrainConfig:
     save_vis_every: int = 10
     save_vis_max_items: int = 8
 
-    outputs_root: Path = Path("outputs")
+    outputs_root: Path = Path("D:\MachineLearning\GraduateDesign\outputs")
     seed: int = 42
 
 
@@ -74,8 +74,8 @@ def main() -> None:
     csv_path = cfg.data_root / "class_dict.csv"
     color2id, id2color, _id2name = load_class_dict_csv(csv_path)
 
-    # outputs (统一 run_dir)
-    out = OutputManager(cfg.outputs_root, exp_name="camvid_deeplabv3p")
+    # outputs
+    out = OutputManager(cfg.outputs_root, exp_name="camvid_deeplabv3plus")
     out.save_config(cfg)
     out.init_metrics()
     print(f"[INFO] run_dir = {out.run_dir}")
@@ -148,7 +148,8 @@ def main() -> None:
             "optimizer_state": optimizer.state_dict(),
             "best_miou": best_miou,
         }
-        torch.save(ckpt, out.ckpt_dir / f"epoch_{epoch:03d}.pth")
+        if epoch % 10 == 0:
+            torch.save(ckpt, out.ckpt_dir / f"epoch_{epoch:03d}.pth") # save every 10 epoch
 
         if (not math.isnan(val_miou)) and (val_miou > best_miou):
             best_miou = val_miou
