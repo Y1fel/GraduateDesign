@@ -1,0 +1,3 @@
+python scripts/test_camvid.py --data_root D:\MachineLearning\GraduateDesign\data\archive\CamVid --ckpt D:\...\checkpoints\best.pth
+python scripts/test_camvid.py --data_root D:\...\CamVid --ckpt D:\MachineLearning\GraduateDesign\outputs\camvid_deeplabv3plus_20260210_123456
+python scripts/test_camvid.py --data_root D:\...\CamVid --ckpt D:\...\best.pth --amp

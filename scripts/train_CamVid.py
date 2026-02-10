@@ -23,7 +23,7 @@ class TrainConfig:
     num_classes: int = 32
     ignore_index: int = 255
 
-    epochs: int = 50
+    epochs: int = 200
     batch_size: int = 4
     num_workers: int = 4
     lr_0: float = 1e-4
@@ -32,11 +32,11 @@ class TrainConfig:
     output_stride: int = 16
     backbone_pretrained: bool = True
 
-    resize_h: int = 450
-    resize_w: int = 600
+    resize_h: int = 540
+    resize_w: int = 720
     hflip_prob: float = 0.5
 
-    save_vis_every: int = 10
+    save_vis_every: int = 50
     save_vis_max_items: int = 8
 
     outputs_root: Path = Path("D:\MachineLearning\GraduateDesign\outputs")

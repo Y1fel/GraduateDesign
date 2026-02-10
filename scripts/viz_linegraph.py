@@ -8,8 +8,8 @@ import matplotlib.pyplot as plt
 
 @dataclass
 class PlotConfig:
-    metrics_csv: Path = Path("D:\MachineLearning\GraduateDesign\outputs\camvid_deeplabv3p_20260207_161811\logs\metrics.csv")
-    out_dir: Path = Path("D:\MachineLearning\GraduateDesign\outputs\camvid_deeplabv3p_20260207_161811\logs\plots")
+    metrics_csv: Path = Path("D:\MachineLearning\GraduateDesign\outputs\camvid_deeplabv3plus_20260210_012136\logs\metrics.csv")
+    out_dir: Path = Path("D:\MachineLearning\GraduateDesign\outputs\camvid_deeplabv3plus_20260210_012136\logs\plots")
     save_fig: bool = True
     show_fig: bool = True
 
