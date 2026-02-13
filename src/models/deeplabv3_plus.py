@@ -18,7 +18,7 @@ class DeepLabV3Plus(nn.Module):
         decoder_channels: int = 256,
         dropout: float = 0.1,
 
-        head_norm: NormType = "gn",
+        head_norm: NormType = "bn",
         head_num_groups: int = 32,
     ):
         super().__init__()

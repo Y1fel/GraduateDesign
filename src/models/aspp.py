@@ -16,7 +16,7 @@ class Conv(nn.Sequential):
         s: int = 1,
         p: int = 0,
         d: int = 1,
-        norm: NormType = "gn",
+        norm: NormType = "bn",
         num_groups: int = 32,
     ):
         super().__init__(
@@ -33,7 +33,7 @@ class ASPP(nn.Module):
         out_channels: int = 256,
         atrous_rates=(6, 12, 18),
         dropout: float = 0.1,
-        norm: NormType = "gn",
+        norm: NormType = "bn",
         num_groups: int = 32,
     ):
         super().__init__()

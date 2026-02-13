@@ -23,12 +23,14 @@ class TestConfig:
     num_classes: int = 32
     ignore_index: int = 255
 
-    resize_h: int = 480
-    resize_w: int = 600
+    output_stride: int = 8
+    head_norm: str = "bn"
 
+    resize_h: int = 720
+    resize_w: int = 960
 
-    batch_size: int = 4
-    num_workers: int = 4
+    batch_size: int = 8
+    num_workers: int = 8
 
     save_triplet_max: int = 25
     use_amp: bool = False
@@ -37,17 +39,12 @@ class TestConfig:
 def resolve_ckpt_path(ckpt: Path) -> Path:
     if ckpt.is_file():
         return ckpt
-
-    # run_dir/checkpoints/best.pth
     p1 = ckpt / "checkpoints" / "best.pth"
     if p1.exists():
         return p1
-
-    # checkpoints/best.pth
     p2 = ckpt / "best.pth"
     if p2.exists():
         return p2
-
     raise FileNotFoundError(f"Cannot find checkpoint under: {ckpt}")
 
 
@@ -55,7 +52,8 @@ def load_model(cfg: TestConfig, device: torch.device) -> torch.nn.Module:
     model = DeepLabV3Plus(
         num_classes=cfg.num_classes,
         backbone_pretrained=False,
-        output_stride=16,
+        output_stride=cfg.output_stride,
+        head_norm=cfg.head_norm,
     ).to(device)
 
     ckpt = torch.load(cfg.ckpt_path, map_location="cpu")
@@ -96,8 +94,7 @@ def save_all_predictions(
 
         for i in range(pred_np.shape[0]):
             stem = Path(names[i]).stem
-            pr_id = pred_np[i]  # (H,W)
-
+            pr_id = pred_np[i]  # (H,W) 离散标签：不要做 bilinear resize
             pr_rgb = id_mask_to_color(pr_id, id2color, ignore_index)  # (H,W,3)
 
             Image.fromarray(pr_rgb).save(pred_color_dir / f"{stem}.png")
@@ -127,18 +124,24 @@ def build_loader(cfg: TestConfig, color2id) -> DataLoader:
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
-    p.add_argument("--data_root", type=str, required=True, help="CamVid root, contains train/val/test and *_labels")
-    p.add_argument("--ckpt", type=str, required=True, help="best.pth / epoch_xxx.pth / run_dir / checkpoints_dir")
-    p.add_argument("--out_dir", type=str, default="", help="output dir for test results (default: <ckpt_parent>/test_results)")
+    p.add_argument("--data_root", type=str, required=True)
+    p.add_argument("--ckpt", type=str, required=True)
+    p.add_argument("--out_dir", type=str, default="")
 
-    p.add_argument("--batch_size", type=int, default=2)
-    p.add_argument("--num_workers", type=int, default=4)
-    p.add_argument("--resize_w", type=int, default=600)
-    p.add_argument("--resize_h", type=int, default=450)
+    p.add_argument("--batch_size", type=int, default=8)
+    p.add_argument("--num_workers", type=int, default=8)
+    p.add_argument("--resize_w", type=int, default=960)
+    p.add_argument("--resize_h", type=int, default=720)
+
     p.add_argument("--num_classes", type=int, default=32)
     p.add_argument("--ignore_index", type=int, default=255)
-    p.add_argument("--save_triplet_max", type=int, default=232)
-    p.add_argument("--amp", action="store_true", help="use autocast for inference (CUDA only)")
+    p.add_argument("--save_triplet_max", type=int, default=25)
+
+    # ✅ 新增：保证与训练一致
+    p.add_argument("--output_stride", type=int, default=8, choices=[8, 16])
+    p.add_argument("--head_norm", type=str, default="bn", choices=["bn", "gn"])
+
+    p.add_argument("--amp", action="store_true")
     return p.parse_args()
 
 
@@ -157,6 +160,8 @@ def main() -> None:
         out_dir=out_dir,
         num_classes=args.num_classes,
         ignore_index=args.ignore_index,
+        output_stride=args.output_stride,
+        head_norm=args.head_norm,
         resize_w=args.resize_w,
         resize_h=args.resize_h,
         batch_size=args.batch_size,
@@ -169,15 +174,12 @@ def main() -> None:
     print(f"[INFO] device = {device}")
     print(f"[INFO] ckpt  = {cfg.ckpt_path}")
     print(f"[INFO] out   = {cfg.out_dir}")
+    print(f"[INFO] os={cfg.output_stride}  head_norm={cfg.head_norm}")
 
-    # class_dict
     color2id, id2color, _id2name = load_class_dict_csv(cfg.data_root / "class_dict.csv")
-
-    # loader / model
     test_loader = build_loader(cfg, color2id)
     model = load_model(cfg, device)
 
-    # quantitative
     test_miou = compute_miou(model, test_loader, device, cfg.num_classes, cfg.ignore_index)
     print(f"[TEST] mIoU = {test_miou:.4f}")
 
@@ -191,6 +193,7 @@ def main() -> None:
         epoch=0,
         max_items=cfg.save_triplet_max,
     )
+
     save_all_predictions(
         model=model,
         loader=test_loader,
