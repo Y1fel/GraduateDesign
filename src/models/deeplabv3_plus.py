@@ -5,6 +5,7 @@ import torch.nn.functional as F
 from src.models.encoder import ResNetBackbone
 from src.models.aspp import ASPP
 from src.models.decoder import DeepLabV3PlusDecoder
+from src.models.switch2Norm import NormType
 
 
 class DeepLabV3Plus(nn.Module):
@@ -16,6 +17,9 @@ class DeepLabV3Plus(nn.Module):
         aspp_out_channels: int = 256,
         decoder_channels: int = 256,
         dropout: float = 0.1,
+
+        head_norm: NormType = "gn",
+        head_num_groups: int = 32,
     ):
         super().__init__()
 
@@ -34,6 +38,8 @@ class DeepLabV3Plus(nn.Module):
             out_channels=aspp_out_channels,
             atrous_rates=rates,
             dropout=dropout,
+            norm=head_norm,
+            num_groups=head_num_groups,
         )
 
         self.decoder = DeepLabV3PlusDecoder(
@@ -41,6 +47,8 @@ class DeepLabV3Plus(nn.Module):
             aspp_out_channels=aspp_out_channels,
             decoder_channels=decoder_channels,
             dropout=dropout,
+            norm=head_norm,
+            num_groups=head_num_groups,
         )
 
         self.classifier = nn.Conv2d(decoder_channels, num_classes, kernel_size=1)

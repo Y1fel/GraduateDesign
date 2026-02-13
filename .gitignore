@@ -23,7 +23,7 @@ Thumbs.db
 .idea/
 
 # ===== Logs / Outputs (your project) =====
-outputs/
+outputs/*
 # 如果你想保留目录结构但不提交内容，可以改成：
 # outputs/*
 # !outputs/.gitkeep
@@ -32,7 +32,7 @@ outputs/
 # !outputs/visual/.gitkeep
 
 # ===== Datasets (do not commit) =====
-data/
+data/*
 # 如果你想保留 data 目录但不提交内容，可以改成：
 # data/*
 # !data/.gitkeep
@@ -48,3 +48,7 @@ data/
 runs/
 wandb/
 tensorboard/
+
+# ===== Others =====
+net.txt
+ssh.txt

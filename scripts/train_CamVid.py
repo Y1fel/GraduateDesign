@@ -15,36 +15,38 @@ from src.models.deeplabv3_plus import DeepLabV3Plus
 from src.utils.Id2Mask import load_class_dict_csv
 from src.viz.visualizer import save_predictions_triplet
 from src.losses.composite import CrossEntropyDiceLoss
+from src.models.switch2Norm import freeze_bn_stats
 
 
 @dataclass
 class TrainConfig:
-    data_root: Path = Path(r"D:\MachineLearning\GraduateDesign\data\archive\CamVid")  # 改成你的
+    data_root: Path = Path("D:/MachineLearning/GraduateDesign/data/archive/CamVid")  # 改成你的
     num_classes: int = 32
     ignore_index: int = 255
 
-    epochs: int = 200
+    epochs: int = 50
     batch_size: int = 4
     num_workers: int = 4
     lr_0: float = 1e-4
     weight_decay: float = 1e-4
 
-    output_stride: int = 16
+    output_stride: int = 8
     backbone_pretrained: bool = True
 
-    resize_h: int = 540
-    resize_w: int = 720
+    resize_h: int = 480
+    resize_w: int = 600
     hflip_prob: float = 0.5
 
     save_vis_every: int = 50
     save_vis_max_items: int = 8
 
-    outputs_root: Path = Path("D:\MachineLearning\GraduateDesign\outputs")
-    seed: int = 42
+    outputs_root: Path = Path("D:/MachineLearning/GraduateDesign/outputs")
+    seed: int = 21
 
 
 def train_one_epoch(model, loader, optimizer, criterion, device) -> float:
     model.train()
+    model.backbone.apply(freeze_bn_stats)
     total_loss, n = 0.0, 0
 
     for imgs, masks, _names in loader:
@@ -69,7 +71,6 @@ def main() -> None:
     set_seed(cfg.seed)
 
     N: int = 369
-    steps = cfg.epochs * (N // cfg.batch_size)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[INFO] device = {device}")
@@ -184,7 +185,7 @@ def main() -> None:
             )
 
 
-        lr_1: float = cfg.lr_0 * (1 - epoch / steps)**0.9 # poly LR schedule
+        lr_1: float = cfg.lr_0 * (1 - epoch / cfg.epochs)**0.9  # poly LR schedule
         for pg in optimizer.param_groups:
             pg["lr"] = lr_1
 

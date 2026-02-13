@@ -1,0 +1,5 @@
+ssh -p 26496 root@connect.bjb1.seetacloud.com
+用户名：root
+Host：connect.bjb1.seetacloud.com
+端口：26496
+GAqftV/Af5gL

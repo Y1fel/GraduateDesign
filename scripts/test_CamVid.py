@@ -1,7 +1,6 @@
 import argparse
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 import torch
@@ -24,8 +23,8 @@ class TestConfig:
     num_classes: int = 32
     ignore_index: int = 255
 
-    resize_h: int = 540
-    resize_w: int = 720
+    resize_h: int = 480
+    resize_w: int = 600
 
 
     batch_size: int = 4
@@ -55,8 +54,8 @@ def resolve_ckpt_path(ckpt: Path) -> Path:
 def load_model(cfg: TestConfig, device: torch.device) -> torch.nn.Module:
     model = DeepLabV3Plus(
         num_classes=cfg.num_classes,
-        backbone_pretrained=False,   # 推理不需要预训练参数；load_state_dict 会覆盖权重
-        output_stride=16,            # 这里要和你训练时一致（如果你训练是 16 就保持 16）
+        backbone_pretrained=False,
+        output_stride=16,
     ).to(device)
 
     ckpt = torch.load(cfg.ckpt_path, map_location="cpu")
@@ -138,7 +137,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--resize_h", type=int, default=450)
     p.add_argument("--num_classes", type=int, default=32)
     p.add_argument("--ignore_index", type=int, default=255)
-    p.add_argument("--save_triplet_max", type=int, default=25)
+    p.add_argument("--save_triplet_max", type=int, default=232)
     p.add_argument("--amp", action="store_true", help="use autocast for inference (CUDA only)")
     return p.parse_args()
 
