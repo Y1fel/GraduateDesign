@@ -1,4 +1,3 @@
-import math
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -7,6 +6,8 @@ from fontTools.misc.arrayTools import scaleRect
 from torch.amp import autocast, GradScaler
 
 import torch
+import math
+import torch.nn as nn
 from torch.utils.data import DataLoader
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -19,6 +20,7 @@ from src.losses.composite import CrossEntropyDiceLoss
 from src.models.deeplabv3_plus import DeepLabV3Plus
 from src.utils.Id2Mask import load_class_dict_csv
 from src.viz.visualizer import save_predictions_triplet
+from src.losses.Focal import FocalLoss
 
 
 @dataclass
@@ -46,14 +48,41 @@ class TrainConfig:
     outputs_root: Path = PROJECT_ROOT / "outputs"
     seed: int = 40
 
+@torch.inference_mode()
+def compute_class_weights_enet(
+    loader: DataLoader,
+    num_classes: int,
+    ignore_index: int = 255,
+    c: float = 1.02,
+    eps: float = 1e-6,
+) -> torch.Tensor:
+    counts = torch.zeros(num_classes, dtype=torch.float64)
 
-def train_one_epoch(model, loader, optimizer, criterion, device, scaler:GradScaler | None) -> float:
+    for batch in loader:
+        masks = batch[1]  # (B, H, W)
+        masks = masks.detach().to("cpu", dtype=torch.int64)
+
+        valid = masks != ignore_index
+        if valid.any():
+            binc = torch.bincount(masks[valid].view(-1), minlength=num_classes).to(torch.float64)
+            counts += binc
+
+    freq = counts / (counts.sum() + eps)
+    weights = 1.0 / torch.log(c + freq + eps)  # ENet 常用的 log 平衡形式
+    return weights.to(torch.float32)
+
+def train_one_epoch(model, loader, optimizer, criterion, device, scaler:GradScaler | None,
+                    epoch: int, total_iters: int, base_lr: float, power: float = 0.9) -> float:
     model.train()
     total_loss, n = 0.0, 0
 
     use_amp = (device.type == "cuda") and (scaler is not None)
 
-    for imgs, masks, _names in loader:
+    for it, (imgs, masks, _names) in enumerate(loader):
+        global_step = (epoch - 1) * len(loader) + it
+        lr = base_lr * (1 - global_step / total_iters) ** power
+        for pg in optimizer.param_groups:
+            pg["lr"] = lr
         imgs = imgs.to(device, non_blocking=True)
         masks = masks.to(device, non_blocking=True)
 
@@ -183,21 +212,46 @@ def main() -> None:
         head_norm="bn",
     ).to(device)
 
-    criterion = CrossEntropyDiceLoss(
+    class_weights = compute_class_weights_enet(
+        train_loader,
         num_classes=cfg.num_classes,
         ignore_index=cfg.ignore_index,
-        ce_weight=1.0,
-        dice_weight=0.5,
-        class_weights=None,
     )
-    optimizer = torch.optim.Adam(model.parameters(), lr=cfg.lr_0, weight_decay=cfg.weight_decay)
+
+    print("class_weights:", class_weights.detach().cpu().tolist())
+
+    criterion = FocalLoss(
+        gamma=2.0,
+        alpha=class_weights,
+        ignore_index=cfg.ignore_index,
+        reduction="mean",
+    ).to(device)
+
+    #criterion = CrossEntropyDiceLoss(
+    #    num_classes=cfg.num_classes,
+    #    ignore_index=cfg.ignore_index,
+    #    ce_weight=1.0,
+    #    dice_weight=0.1,
+    #    class_weights=None,
+    #)
+    optimizer = torch.optim.SGD(
+        model.parameters(),
+        lr=cfg.lr_0,
+        momentum=0.9,
+        weight_decay=cfg.weight_decay,
+        nesterov=True,
+    )
 
     best_miou = -1.0
 
     for epoch in range(1, cfg.epochs + 1):
+        total_iters = cfg.epochs * len(train_loader)
         t0 = time.time()
 
-        train_loss = train_one_epoch(model, train_loader, optimizer, criterion, device, scaler)
+        train_loss = train_one_epoch(
+            model, train_loader, optimizer, criterion, device, scaler,
+            epoch=epoch, total_iters=total_iters, base_lr=cfg.lr_0
+        )
         val_miou = compute_miou(model, val_loader, device, cfg.num_classes, cfg.ignore_index)
 
         dt = time.time() - t0
@@ -239,10 +293,8 @@ def main() -> None:
                 best_ckpt_path=out.ckpt_dir / "best.pth",
             )
 
-        # poly LR schedule（按 epoch）
-        lr_1: float = cfg.lr_0 * (1 - epoch / cfg.epochs) ** 0.9
-        for pg in optimizer.param_groups:
-            pg["lr"] = lr_1
+        cur_lr = optimizer.param_groups[0]["lr"]
+        print(f"... lr={cur_lr:.6f}") # print lr
 
     print("[DONE] Training finished.")
 
