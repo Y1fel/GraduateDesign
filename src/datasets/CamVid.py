@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, Tuple, Optional, Union, Sequence
 
 import numpy as np
 import torch
@@ -23,6 +23,7 @@ class CamVidFolderDataset(Dataset):
         hflip_prob: float,
         ignore_index: int,
         training: bool,
+        label_lut: Optional[Union[np.ndarray, Sequence[int]]] = None,
     ) -> None:
         assert split in ("train", "val", "test"), f"split must be train/val/test, got {split}"
 
@@ -34,6 +35,14 @@ class CamVidFolderDataset(Dataset):
         self.hflip_prob = hflip_prob
         self.ignore_index = ignore_index
         self.training = training
+
+        self.label_lut: Optional[np.ndarray]
+        if label_lut is None:
+            self.label_lut = None
+        else:
+            self.label_lut = np.asarray(label_lut, dtype=np.uint8)
+            if self.label_lut.shape != (256,):
+                raise ValueError(f"label_lut must have shape (256,), got {self.label_lut.shape}")
 
         self.train_images_dir = root / "train"
         self.train_masks_dir = root / "train_labels"
@@ -56,33 +65,20 @@ class CamVidFolderDataset(Dataset):
 
         exts = {".png", ".jpg", ".jpeg", ".bmp"}
         self.img_paths = sorted([p for p in self.images_dir.iterdir() if p.suffix.lower() in exts])
-        if not self.img_paths:
+        if len(self.img_paths) == 0:
             raise RuntimeError(f"No images found in {self.images_dir}")
 
     def __len__(self) -> int:
         return len(self.img_paths)
 
-    def _resolve_mask(self, img_path: Path) -> Path:
-        # 1) 同名
-        p1 = self.masks_dir / img_path.name
-        if p1.exists():
-            return p1
-
-        # 2) 常见命名：xxx_L.png
-        p2 = self.masks_dir / f"{img_path.stem}_L{img_path.suffix}"
-        if p2.exists():
-            return p2
-
-        # 3) 兜底：同 stem 任意扩展名
-        cand = list(self.masks_dir.glob(f"{img_path.stem}.*"))
-        if cand:
-            return cand[0]
-
-        raise FileNotFoundError(f"Mask not found for {img_path.name} in {self.masks_dir}")
-
     def __getitem__(self, idx: int):
         img_path = self.img_paths[idx]
-        mask_path = self._resolve_mask(img_path)
+        mask_path = self.masks_dir / f"{img_path.stem}_L.png"
+        if not mask_path.exists():
+            candidates = list(self.masks_dir.glob(f"{img_path.stem}_L.*"))
+            if len(candidates) == 0:
+                raise FileNotFoundError(f"Mask not found: {mask_path}")
+            mask_path = candidates[0]
 
         img = Image.open(img_path).convert("RGB")
         mask_rgb = Image.open(mask_path).convert("RGB")
@@ -95,7 +91,12 @@ class CamVidFolderDataset(Dataset):
         img_t = pil_to_tensor(img)
         img_t = normalize_img(img_t)
 
+        # RGB mask -> old_id (0..31 或 ignore)
         mask_id = color_mask_to_id(mask_rgb, self.color2id, self.ignore_index)  # (H,W) uint8
+
+        if self.label_lut is not None:
+            mask_id = self.label_lut[mask_id]  # (H,W) uint8
+
         mask_t = torch.from_numpy(mask_id.astype(np.int64))  # (H,W) long
 
         return img_t, mask_t, img_path.name

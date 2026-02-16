@@ -1,13 +1,11 @@
 import time
+import math
 from dataclasses import dataclass
 from pathlib import Path
 
-from fontTools.misc.arrayTools import scaleRect
-from torch.amp import autocast, GradScaler
-
+import numpy as np
 import torch
-import math
-import torch.nn as nn
+from torch.amp import autocast, GradScaler
 from torch.utils.data import DataLoader
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -16,7 +14,6 @@ from src.commom.output_manager import OutputManager
 from src.commom.repro import set_seed
 from src.datasets.CamVid import CamVidFolderDataset
 from src.eval.mIoU import compute_miou
-from src.losses.composite import CrossEntropyDiceLoss
 from src.models.deeplabv3_plus import DeepLabV3Plus
 from src.utils.Id2Mask import load_class_dict_csv
 from src.viz.visualizer import save_predictions_triplet
@@ -26,7 +23,9 @@ from src.losses.Focal import FocalLoss
 @dataclass
 class TrainConfig:
     data_root: Path = PROJECT_ROOT / "data" / "archive" / "CamVid"
-    num_classes: int = 32
+
+    # ✅ 32 -> 5（合并）
+    num_classes: int = 5
     ignore_index: int = 255
 
     epochs: int = 100
@@ -48,6 +47,33 @@ class TrainConfig:
     outputs_root: Path = PROJECT_ROOT / "outputs"
     seed: int = 40
 
+
+def build_merge_lut(groups_5, ignore_index: int = 255) -> np.ndarray:
+    """
+    groups_5: list[list[int]] 长度=5
+      groups_5[new_id] = [old_id1, old_id2, ...] 这些 old_id 都合并成 new_id
+    其余未覆盖的 old_id -> ignore_index
+    """
+    if len(groups_5) != 5:
+        raise ValueError(f"groups_5 must have length=5, got {len(groups_5)}")
+
+    lut = np.full((256,), fill_value=ignore_index, dtype=np.uint8)
+    used = set()
+
+    for new_id, group in enumerate(groups_5):
+        for old_id in group:
+            old_id = int(old_id)
+            if old_id in used:
+                raise ValueError(f"old_id {old_id} appears in multiple groups")
+            used.add(old_id)
+            lut[old_id] = np.uint8(new_id)
+
+    missing = [i for i in range(32) if lut[i] == ignore_index]
+    if missing:
+        print(f"[WARN] these old ids are not assigned (will be ignored): {missing}")
+    return lut
+
+
 @torch.inference_mode()
 def compute_class_weights_enet(
     loader: DataLoader,
@@ -68,11 +94,22 @@ def compute_class_weights_enet(
             counts += binc
 
     freq = counts / (counts.sum() + eps)
-    weights = 1.0 / torch.log(c + freq + eps)  # ENet 常用的 log 平衡形式
+    weights = 1.0 / torch.log(c + freq + eps)
     return weights.to(torch.float32)
 
-def train_one_epoch(model, loader, optimizer, criterion, device, scaler:GradScaler | None,
-                    epoch: int, total_iters: int, base_lr: float, power: float = 0.9) -> float:
+
+def train_one_epoch(
+    model,
+    loader,
+    optimizer,
+    criterion,
+    device,
+    scaler: GradScaler | None,
+    epoch: int,
+    total_iters: int,
+    base_lr: float,
+    power: float = 0.9,
+) -> float:
     model.train()
     total_loss, n = 0.0, 0
 
@@ -83,6 +120,7 @@ def train_one_epoch(model, loader, optimizer, criterion, device, scaler:GradScal
         lr = base_lr * (1 - global_step / total_iters) ** power
         for pg in optimizer.param_groups:
             pg["lr"] = lr
+
         imgs = imgs.to(device, non_blocking=True)
         masks = masks.to(device, non_blocking=True)
 
@@ -120,11 +158,8 @@ def save_vis_using_best_ckpt(
     max_items: int,
     best_ckpt_path: Path,
 ) -> None:
-
-    # 1) 备份当前权重（在 CPU 上备份即可）
     cur_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
 
-    # 2) 如果 best.pth 存在，加载 best 权重
     if best_ckpt_path.exists():
         ckpt = torch.load(best_ckpt_path, map_location="cpu")
         state = ckpt["model_state"] if isinstance(ckpt, dict) and "model_state" in ckpt else ckpt
@@ -142,7 +177,6 @@ def save_vis_using_best_ckpt(
         max_items=max_items,
     )
 
-    # 3) 恢复当前训练权重
     model.load_state_dict(cur_state, strict=True)
 
 
@@ -152,12 +186,24 @@ def main() -> None:
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     scaler = GradScaler(enabled=(device.type == "cuda"))
-
     print(f"[INFO] device = {device}")
 
-    # mapping
+    # 32类颜色表/映射仍用于 RGB->old_id 解码
     csv_path = cfg.data_root / "class_dict.csv"
     color2id, id2color, _id2name = load_class_dict_csv(csv_path)
+
+    # 组表
+    GROUPS_5 = [
+        [0, 2, 7, 16],              # creature
+        [5, 13, 14, 22, 25, 27],  # Car
+        [10, 11, 15, 17, 18, 19],  # road
+        [1, 3, 4, 9, 28, 31],  # Archi
+        [6, 8, 12, 20, 21, 23, 24, 26, 29, 30] # Others
+    ]
+
+    label_lut = build_merge_lut(GROUPS_5, ignore_index=cfg.ignore_index)
+
+    id2color_5 = [id2color[group[0]] for group in GROUPS_5]
 
     # outputs
     out = OutputManager(cfg.outputs_root, exp_name="camvid_deeplabv3plus")
@@ -165,7 +211,7 @@ def main() -> None:
     out.init_metrics()
     print(f"[INFO] run_dir = {out.run_dir}")
 
-    # datasets（不需要 splits，直接用文件夹）
+    # datasets（训练/验证都必须用同一个 label_lut）
     train_ds = CamVidFolderDataset(
         root=cfg.data_root,
         split="train",
@@ -175,6 +221,7 @@ def main() -> None:
         hflip_prob=cfg.hflip_prob,
         ignore_index=cfg.ignore_index,
         training=True,
+        label_lut=label_lut,
     )
     val_ds = CamVidFolderDataset(
         root=cfg.data_root,
@@ -185,6 +232,7 @@ def main() -> None:
         hflip_prob=0.0,
         ignore_index=cfg.ignore_index,
         training=False,
+        label_lut=label_lut,  # ✅ 关键：val 也要一致
     )
 
     train_loader = DataLoader(
@@ -212,12 +260,12 @@ def main() -> None:
         head_norm="bn",
     ).to(device)
 
+    # class weights（此时 loader 的 mask 已经是 0..4 / 255）
     class_weights = compute_class_weights_enet(
         train_loader,
         num_classes=cfg.num_classes,
         ignore_index=cfg.ignore_index,
     )
-
     print("class_weights:", class_weights.detach().cpu().tolist())
 
     criterion = FocalLoss(
@@ -227,13 +275,6 @@ def main() -> None:
         reduction="mean",
     ).to(device)
 
-    #criterion = CrossEntropyDiceLoss(
-    #    num_classes=cfg.num_classes,
-    #    ignore_index=cfg.ignore_index,
-    #    ce_weight=1.0,
-    #    dice_weight=0.1,
-    #    class_weights=None,
-    #)
     optimizer = torch.optim.SGD(
         model.parameters(),
         lr=cfg.lr_0,
@@ -249,8 +290,15 @@ def main() -> None:
         t0 = time.time()
 
         train_loss = train_one_epoch(
-            model, train_loader, optimizer, criterion, device, scaler,
-            epoch=epoch, total_iters=total_iters, base_lr=cfg.lr_0
+            model,
+            train_loader,
+            optimizer,
+            criterion,
+            device,
+            scaler,
+            epoch=epoch,
+            total_iters=total_iters,
+            base_lr=cfg.lr_0,
         )
         val_miou = compute_miou(model, val_loader, device, cfg.num_classes, cfg.ignore_index)
 
@@ -262,7 +310,6 @@ def main() -> None:
 
         out.append_metrics(epoch, train_loss, val_miou, dt)
 
-        # ckpt
         ckpt = {
             "epoch": epoch,
             "model_state": model.state_dict(),
@@ -286,7 +333,7 @@ def main() -> None:
                 val_loader=val_loader,
                 device=device,
                 out_dir=out.vis_dir,
-                id2color=id2color,
+                id2color=id2color_5,
                 ignore_index=cfg.ignore_index,
                 epoch=epoch,
                 max_items=cfg.save_vis_max_items,
@@ -294,7 +341,7 @@ def main() -> None:
             )
 
         cur_lr = optimizer.param_groups[0]["lr"]
-        print(f"... lr={cur_lr:.6f}") # print lr
+        print(f"... lr={cur_lr:.6f}")
 
     print("[DONE] Training finished.")
 
