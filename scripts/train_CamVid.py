@@ -1,5 +1,5 @@
-import time
 import math
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -17,25 +17,29 @@ from src.eval.mIoU import compute_miou
 from src.models.deeplabv3_plus import DeepLabV3Plus
 from src.utils.Id2Mask import load_class_dict_csv
 from src.viz.visualizer import save_predictions_triplet
-from src.losses.Focal import FocalLoss
+from src.losses.composite import CrossEntropyDiceLoss
 
 
 @dataclass
 class TrainConfig:
     data_root: Path = PROJECT_ROOT / "data" / "archive" / "CamVid"
 
-    # ✅ 32 -> 5（合并）
-    num_classes: int = 5
+    num_classes: int = 11
     ignore_index: int = 255
 
     epochs: int = 100
     batch_size: int = 8
     num_workers: int = 4
-    lr_0: float = 1e-4
+    lr_0: float = 5e-4
     weight_decay: float = 1e-4
+
+    ce_weight: float = 1.0
+    dice_weight: float = 0.5
+    label_smoothing: float = 0.05
 
     output_stride: int = 8
     backbone_pretrained: bool = True
+    head_norm: str = "bn"
 
     resize_h: int = 720
     resize_w: int = 960
@@ -48,19 +52,14 @@ class TrainConfig:
     seed: int = 40
 
 
-def build_merge_lut(groups_5, ignore_index: int = 255) -> np.ndarray:
-    """
-    groups_5: list[list[int]] 长度=5
-      groups_5[new_id] = [old_id1, old_id2, ...] 这些 old_id 都合并成 new_id
-    其余未覆盖的 old_id -> ignore_index
-    """
-    if len(groups_5) != 5:
-        raise ValueError(f"groups_5 must have length=5, got {len(groups_5)}")
+def build_merge_lut(groups_11, ignore_index: int = 255) -> np.ndarray:
+    if len(groups_11) != 11:
+        raise ValueError(f"groups_11 must have length=11, got {len(groups_11)}")
 
     lut = np.full((256,), fill_value=ignore_index, dtype=np.uint8)
     used = set()
 
-    for new_id, group in enumerate(groups_5):
+    for new_id, group in enumerate(groups_11):
         for old_id in group:
             old_id = int(old_id)
             if old_id in used:
@@ -68,34 +67,12 @@ def build_merge_lut(groups_5, ignore_index: int = 255) -> np.ndarray:
             used.add(old_id)
             lut[old_id] = np.uint8(new_id)
 
+    lut[30] = np.uint8(ignore_index)
+
     missing = [i for i in range(32) if lut[i] == ignore_index]
     if missing:
         print(f"[WARN] these old ids are not assigned (will be ignored): {missing}")
     return lut
-
-
-@torch.inference_mode()
-def compute_class_weights_enet(
-    loader: DataLoader,
-    num_classes: int,
-    ignore_index: int = 255,
-    c: float = 1.02,
-    eps: float = 1e-6,
-) -> torch.Tensor:
-    counts = torch.zeros(num_classes, dtype=torch.float64)
-
-    for batch in loader:
-        masks = batch[1]  # (B, H, W)
-        masks = masks.detach().to("cpu", dtype=torch.int64)
-
-        valid = masks != ignore_index
-        if valid.any():
-            binc = torch.bincount(masks[valid].view(-1), minlength=num_classes).to(torch.float64)
-            counts += binc
-
-    freq = counts / (counts.sum() + eps)
-    weights = 1.0 / torch.log(c + freq + eps)
-    return weights.to(torch.float32)
 
 
 def train_one_epoch(
@@ -192,18 +169,27 @@ def main() -> None:
     csv_path = cfg.data_root / "class_dict.csv"
     color2id, id2color, _id2name = load_class_dict_csv(csv_path)
 
-    # 组表
-    GROUPS_5 = [
-        [0, 2, 7, 16],              # creature
-        [5, 13, 14, 22, 25, 27],  # Car
-        [10, 11, 15, 17, 18, 19],  # road
-        [1, 3, 4, 9, 28, 31],  # Archi
-        [6, 8, 12, 20, 21, 23, 24, 26, 29, 30] # Others
+    # 11类分组（old_id -> new_id）
+    GROUPS_11 = [
+        [21],                 # 0 Sky
+        [4, 31, 1, 3, 28],     # 1 Building: Building, Wall, Archway, Bridge, Tunnel
+        [8, 23],              # 2 Pole: Column_Pole + TrafficCone
+        [17, 10, 11],         # 3 Road: Road + LaneMkgsDriv + LaneMkgsNonDriv
+        [19, 18, 15],         # 4 Pavement: Sidewalk + RoadShoulder + ParkingBlock
+        [26, 29],             # 5 Tree: Tree + VegetationMisc
+        [20, 24, 12],         # 6 SignSymbol: SignSymbol + TrafficLight + Misc_Text
+        [9],                  # 7 Fence
+        [5, 22, 27, 25, 14, 13],  # 8 Car: Car + SUVPickupTruck + Truck_Bus + Train + OtherMoving + MotorcycleScooter
+        [16, 7, 0, 6],         # 9 Pedestrian: Pedestrian + Child + Animal + CartLuggagePram
+        [2],                  # 10 Bicyclist
     ]
 
-    label_lut = build_merge_lut(GROUPS_5, ignore_index=cfg.ignore_index)
+    label_lut = build_merge_lut(GROUPS_11, ignore_index=cfg.ignore_index)
+    label_lut[30] = np.uint8(cfg.ignore_index)  # Void ignore
 
-    id2color_5 = [id2color[group[0]] for group in GROUPS_5]
+    # 11类可视化颜色（代表色）
+    rep_old_ids_11 = [21, 4, 8, 17, 19, 26, 20, 9, 5, 16, 2]
+    id2color_11 = [id2color[i] for i in rep_old_ids_11]
 
     # outputs
     out = OutputManager(cfg.outputs_root, exp_name="camvid_deeplabv3plus")
@@ -211,7 +197,7 @@ def main() -> None:
     out.init_metrics()
     print(f"[INFO] run_dir = {out.run_dir}")
 
-    # datasets（训练/验证都必须用同一个 label_lut）
+    # datasets
     train_ds = CamVidFolderDataset(
         root=cfg.data_root,
         split="train",
@@ -232,7 +218,7 @@ def main() -> None:
         hflip_prob=0.0,
         ignore_index=cfg.ignore_index,
         training=False,
-        label_lut=label_lut,  # ✅ 关键：val 也要一致
+        label_lut=label_lut,
     )
 
     train_loader = DataLoader(
@@ -257,22 +243,16 @@ def main() -> None:
         num_classes=cfg.num_classes,
         backbone_pretrained=cfg.backbone_pretrained,
         output_stride=cfg.output_stride,
-        head_norm="bn",
+        head_norm=cfg.head_norm,
     ).to(device)
 
-    # class weights（此时 loader 的 mask 已经是 0..4 / 255）
-    class_weights = compute_class_weights_enet(
-        train_loader,
+    criterion = CrossEntropyDiceLoss(
         num_classes=cfg.num_classes,
         ignore_index=cfg.ignore_index,
-    )
-    print("class_weights:", class_weights.detach().cpu().tolist())
-
-    criterion = FocalLoss(
-        gamma=2.0,
-        alpha=class_weights,
-        ignore_index=cfg.ignore_index,
-        reduction="mean",
+        ce_weight=cfg.ce_weight,
+        dice_weight=cfg.dice_weight,
+        label_smoothing=cfg.label_smoothing,
+        dice_include_background=True,
     ).to(device)
 
     optimizer = torch.optim.SGD(
@@ -333,7 +313,7 @@ def main() -> None:
                 val_loader=val_loader,
                 device=device,
                 out_dir=out.vis_dir,
-                id2color=id2color_5,
+                id2color=id2color_11,
                 ignore_index=cfg.ignore_index,
                 epoch=epoch,
                 max_items=cfg.save_vis_max_items,

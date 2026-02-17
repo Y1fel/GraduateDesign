@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Dict, Tuple, Optional, Union, Sequence
+from typing import Dict, Tuple, Optional
 
 import numpy as np
 import torch
@@ -23,33 +23,34 @@ class CamVidFolderDataset(Dataset):
         hflip_prob: float,
         ignore_index: int,
         training: bool,
-        label_lut: Optional[Union[np.ndarray, Sequence[int]]] = None,
+        label_lut: Optional[np.ndarray] = None,  # shape (256,), old_id -> new_id or ignore
     ) -> None:
         assert split in ("train", "val", "test"), f"split must be train/val/test, got {split}"
 
-        self.root = root
+        self.root = Path(root)
         self.split = split
         self.color2id = color2id
-        self.resize_w = resize_w
-        self.resize_h = resize_h
-        self.hflip_prob = hflip_prob
-        self.ignore_index = ignore_index
-        self.training = training
+        self.resize_w = int(resize_w)
+        self.resize_h = int(resize_h)
+        self.hflip_prob = float(hflip_prob)
+        self.ignore_index = int(ignore_index)
+        self.training = bool(training)
 
-        self.label_lut: Optional[np.ndarray]
-        if label_lut is None:
-            self.label_lut = None
+        if label_lut is not None:
+            lut = np.asarray(label_lut)
+            if lut.shape != (256,):
+                raise ValueError(f"label_lut must have shape (256,), got {lut.shape}")
+            # 用 uint8 存，后面映射时保持 0..K-1 或 255
+            self.label_lut = lut.astype(np.uint8, copy=False)
         else:
-            self.label_lut = np.asarray(label_lut, dtype=np.uint8)
-            if self.label_lut.shape != (256,):
-                raise ValueError(f"label_lut must have shape (256,), got {self.label_lut.shape}")
+            self.label_lut = None
 
-        self.train_images_dir = root / "train"
-        self.train_masks_dir = root / "train_labels"
-        self.val_images_dir = root / "val"
-        self.val_masks_dir = root / "val_labels"
-        self.test_images_dir = root / "test"
-        self.test_masks_dir = root / "test_labels"
+        self.train_images_dir = self.root / "train"
+        self.train_masks_dir = self.root / "train_labels"
+        self.val_images_dir = self.root / "val"
+        self.val_masks_dir = self.root / "val_labels"
+        self.test_images_dir = self.root / "test"
+        self.test_masks_dir = self.root / "test_labels"
 
         if split == "train":
             self.images_dir, self.masks_dir = self.train_images_dir, self.train_masks_dir
@@ -65,20 +66,33 @@ class CamVidFolderDataset(Dataset):
 
         exts = {".png", ".jpg", ".jpeg", ".bmp"}
         self.img_paths = sorted([p for p in self.images_dir.iterdir() if p.suffix.lower() in exts])
-        if len(self.img_paths) == 0:
+        if not self.img_paths:
             raise RuntimeError(f"No images found in {self.images_dir}")
 
     def __len__(self) -> int:
         return len(self.img_paths)
 
+    def _resolve_mask(self, img_path: Path) -> Path:
+        # 1) 同名
+        p1 = self.masks_dir / img_path.name
+        if p1.exists():
+            return p1
+
+        # 2) 常见命名：xxx_L.png
+        p2 = self.masks_dir / f"{img_path.stem}_L{img_path.suffix}"
+        if p2.exists():
+            return p2
+
+        # 3) 任意扩展名
+        cand = list(self.masks_dir.glob(f"{img_path.stem}.*"))
+        if cand:
+            return cand[0]
+
+        raise FileNotFoundError(f"Mask not found for {img_path.name} in {self.masks_dir}")
+
     def __getitem__(self, idx: int):
         img_path = self.img_paths[idx]
-        mask_path = self.masks_dir / f"{img_path.stem}_L.png"
-        if not mask_path.exists():
-            candidates = list(self.masks_dir.glob(f"{img_path.stem}_L.*"))
-            if len(candidates) == 0:
-                raise FileNotFoundError(f"Mask not found: {mask_path}")
-            mask_path = candidates[0]
+        mask_path = self._resolve_mask(img_path)
 
         img = Image.open(img_path).convert("RGB")
         mask_rgb = Image.open(mask_path).convert("RGB")
@@ -91,12 +105,13 @@ class CamVidFolderDataset(Dataset):
         img_t = pil_to_tensor(img)
         img_t = normalize_img(img_t)
 
-        # RGB mask -> old_id (0..31 或 ignore)
-        mask_id = color_mask_to_id(mask_rgb, self.color2id, self.ignore_index)  # (H,W) uint8
+        mask_old = color_mask_to_id(mask_rgb, self.color2id, self.ignore_index)
 
         if self.label_lut is not None:
-            mask_id = self.label_lut[mask_id]  # (H,W) uint8
+            mask_new = self.label_lut[mask_old]
+        else:
+            mask_new = mask_old
 
-        mask_t = torch.from_numpy(mask_id.astype(np.int64))  # (H,W) long
+        mask_t = torch.from_numpy(mask_new.astype(np.int64))  # long for CE
 
         return img_t, mask_t, img_path.name

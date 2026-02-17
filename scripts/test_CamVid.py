@@ -20,7 +20,7 @@ class TestConfig:
     ckpt_path: Path
     out_dir: Path
 
-    num_classes: int = 32
+    num_classes: int = 11
     ignore_index: int = 255
 
     output_stride: int = 8
@@ -133,7 +133,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--resize_w", type=int, default=960)
     p.add_argument("--resize_h", type=int, default=720)
 
-    p.add_argument("--num_classes", type=int, default=32)
+    p.add_argument("--num_classes", type=int, default=11)
     p.add_argument("--ignore_index", type=int, default=255)
     p.add_argument("--save_triplet_max", type=int, default=25)
 
