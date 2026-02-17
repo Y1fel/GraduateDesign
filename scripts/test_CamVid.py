@@ -1,4 +1,5 @@
 import argparse
+import csv
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -32,7 +33,7 @@ class TestConfig:
     batch_size: int = 8
     num_workers: int = 8
 
-    save_triplet_max: int = 25
+    save_triplet_max: int = 100
     use_amp: bool = False
 
 
@@ -61,6 +62,30 @@ def load_model(cfg: TestConfig, device: torch.device) -> torch.nn.Module:
     model.load_state_dict(state, strict=True)
     model.eval()
     return model
+
+
+def build_merge_lut(groups_11, ignore_index: int = 255) -> np.ndarray:
+    if len(groups_11) != 11:
+        raise ValueError(f"groups_11 must have length=11, got {len(groups_11)}")
+
+    lut = np.full((256,), fill_value=ignore_index, dtype=np.uint8)
+    used = set()
+
+    for new_id, group in enumerate(groups_11):
+        for old_id in group:
+            old_id = int(old_id)
+            if old_id in used:
+                raise ValueError(f"old_id {old_id} appears in multiple groups")
+            used.add(old_id)
+            lut[old_id] = np.uint8(new_id)
+
+    # Void ignore
+    lut[30] = np.uint8(ignore_index)
+
+    missing = [i for i in range(32) if lut[i] == ignore_index]
+    if missing:
+        print(f"[WARN] these old ids are not assigned (will be ignored): {missing}")
+    return lut
 
 
 @torch.inference_mode()
@@ -101,7 +126,7 @@ def save_all_predictions(
             Image.fromarray(pr_id).save(pred_id_dir / f"{stem}.png")
 
 
-def build_loader(cfg: TestConfig, color2id) -> DataLoader:
+def build_loader(cfg: TestConfig, color2id, label_lut: np.ndarray) -> DataLoader:
     test_ds = CamVidFolderDataset(
         root=cfg.data_root,
         split="test",
@@ -111,6 +136,7 @@ def build_loader(cfg: TestConfig, color2id) -> DataLoader:
         hflip_prob=0.0,
         ignore_index=cfg.ignore_index,
         training=False,
+        label_lut=label_lut,  # ✅ 关键：和训练一致（32->11）
     )
     return DataLoader(
         test_ds,
@@ -135,9 +161,9 @@ def parse_args() -> argparse.Namespace:
 
     p.add_argument("--num_classes", type=int, default=11)
     p.add_argument("--ignore_index", type=int, default=255)
-    p.add_argument("--save_triplet_max", type=int, default=25)
+    p.add_argument("--save_triplet_max", type=int, default=100)
 
-    # ✅ 新增：保证与训练一致
+    # ✅ 与训练保持一致
     p.add_argument("--output_stride", type=int, default=8, choices=[8, 16])
     p.add_argument("--head_norm", type=str, default="bn", choices=["bn", "gn"])
 
@@ -176,8 +202,30 @@ def main() -> None:
     print(f"[INFO] out   = {cfg.out_dir}")
     print(f"[INFO] os={cfg.output_stride}  head_norm={cfg.head_norm}")
 
-    color2id, id2color, _id2name = load_class_dict_csv(cfg.data_root / "class_dict.csv")
-    test_loader = build_loader(cfg, color2id)
+    # 32类颜色表（用于 RGB->old_id 解码）
+    color2id, id2color_32, _id2name = load_class_dict_csv(cfg.data_root / "class_dict.csv")
+
+    # ✅ 11类分组（必须与训练一致：old_id -> new_id）
+    GROUPS_11 = [
+        [21],                 # 0 Sky
+        [4, 31, 1, 3, 28],     # 1 Building: Building, Wall, Archway, Bridge, Tunnel
+        [8, 23],              # 2 Pole: Column_Pole + TrafficCone
+        [17, 10, 11],         # 3 Road: Road + LaneMkgsDriv + LaneMkgsNonDriv
+        [19, 18, 15],         # 4 Pavement: Sidewalk + RoadShoulder + ParkingBlock
+        [26, 29],             # 5 Tree: Tree + VegetationMisc
+        [20, 24, 12],         # 6 SignSymbol: SignSymbol + TrafficLight + Misc_Text
+        [9],                  # 7 Fence
+        [5, 22, 27, 25, 14, 13],  # 8 Car: Car + SUVPickupTruck + Truck_Bus + Train + OtherMoving + MotorcycleScooter
+        [16, 7, 0, 6],         # 9 Pedestrian: Pedestrian + Child + Animal + CartLuggagePram
+        [2],                  # 10 Bicyclist
+    ]
+    label_lut = build_merge_lut(GROUPS_11, ignore_index=cfg.ignore_index)
+
+    # ✅ 11类可视化颜色（代表色，必须与训练一致）
+    rep_old_ids_11 = [21, 4, 8, 17, 19, 26, 20, 9, 5, 16, 2]
+    id2color_11 = [id2color_32[i] for i in rep_old_ids_11]
+
+    test_loader = build_loader(cfg, color2id, label_lut)
     model = load_model(cfg, device)
 
     test_miou = compute_miou(model, test_loader, device, cfg.num_classes, cfg.ignore_index)
@@ -188,7 +236,7 @@ def main() -> None:
         loader=test_loader,
         device=device,
         out_dir=cfg.out_dir / "triplets",
-        id2color=id2color,
+        id2color=id2color_11,  # ✅ 11类颜色
         ignore_index=cfg.ignore_index,
         epoch=0,
         max_items=cfg.save_triplet_max,
@@ -199,7 +247,7 @@ def main() -> None:
         loader=test_loader,
         device=device,
         out_dir=cfg.out_dir,
-        id2color=id2color,
+        id2color=id2color_11,  # ✅ 11类颜色
         ignore_index=cfg.ignore_index,
         use_amp=cfg.use_amp,
     )
