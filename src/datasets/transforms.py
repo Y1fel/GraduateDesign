@@ -36,40 +36,39 @@ def photometric_augment(
     contrast: float,
     saturation: float,
     gamma_range: Tuple[float, float],
+    op_prob: float = 0.5,
 ) -> Image.Image:
-    """
-    Light/weather robustness augmentation (image only, no mask transform).
-
-    - brightness/contrast/saturation are jitter ratios in [0, 1).
-      e.g. brightness=0.25 -> factor in [0.75, 1.25]
-    - gamma_range controls non-linear illumination shift.
-    """
     if random.random() >= _clamp_unit(prob):
         return img
 
     out = img
+    op_prob = _clamp_unit(op_prob)
 
     def _sample_factor(span: float) -> float:
         span = max(0.0, float(span))
         return random.uniform(1.0 - span, 1.0 + span)
 
-    if brightness > 0:
+    if brightness > 0 and random.random() < op_prob:
         out = ImageEnhance.Brightness(out).enhance(_sample_factor(brightness))
-    if contrast > 0:
+    if contrast > 0 and random.random() < op_prob:
         out = ImageEnhance.Contrast(out).enhance(_sample_factor(contrast))
-    if saturation > 0:
+    if saturation > 0 and random.random() < op_prob:
         out = ImageEnhance.Color(out).enhance(_sample_factor(saturation))
 
     g0, g1 = float(gamma_range[0]), float(gamma_range[1])
     lo, hi = (g0, g1) if g0 <= g1 else (g1, g0)
     lo = max(1e-3, lo)
     hi = max(lo, hi)
-    gamma = random.uniform(lo, hi)
-
-    arr = np.asarray(out, dtype=np.float32) / 255.0
-    arr = np.power(np.clip(arr, 0.0, 1.0), gamma)
+    if random.random() < op_prob:
+        gamma = random.uniform(lo, hi)
+        arr = np.asarray(out, dtype=np.float32) / 255.0
+        arr = np.power(np.clip(arr, 0.0, 1.0), gamma)
+    else:
+        arr = np.asarray(out, dtype=np.float32) / 255.0
     arr = (arr * 255.0).round().astype(np.uint8)
     return Image.fromarray(arr, mode="RGB")
+
+
 
 
 def resize_pair(

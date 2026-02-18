@@ -35,7 +35,7 @@ class TrainConfig:
 
     ce_weight: float = 1.0
     dice_weight: float = 0.5
-    label_smoothing: float = 0.05
+    label_smoothing: float = 0.0
 
     output_stride: int = 8
     backbone_pretrained: bool = True
@@ -45,12 +45,14 @@ class TrainConfig:
     resize_w: int = 960
     hflip_prob: float = 0.5
 
-    photo_aug_prob: float = 0.8
-    brightness_jitter: float = 0.30
-    contrast_jitter: float = 0.25
-    saturation_jitter: float = 0.20
-    gamma_min: float = 0.70
-    gamma_max: float = 1.50
+    photo_aug_prob: float = 0.35
+    brightness_jitter: float = 0.15
+    contrast_jitter: float = 0.12
+    saturation_jitter: float = 0.10
+    gamma_min: float = 0.90
+    gamma_max: float = 1.10
+    photo_op_prob: float = 0.60
+    photo_aug_warmup_epochs: int = 20
 
     save_vis_every: int = 50
     save_vis_max_items: int = 8
@@ -220,6 +222,7 @@ def main() -> None:
         contrast_jitter=cfg.contrast_jitter,
         saturation_jitter=cfg.saturation_jitter,
         gamma_range=(cfg.gamma_min, cfg.gamma_max),
+        photo_op_prob=cfg.photo_op_prob,
     )
     val_ds = CamVidFolderDataset(
         root=cfg.data_root,
@@ -280,6 +283,14 @@ def main() -> None:
     for epoch in range(1, cfg.epochs + 1):
         total_iters = cfg.epochs * len(train_loader)
         t0 = time.time()
+
+        if hasattr(train_ds, "set_photo_aug_scale"):
+            if cfg.photo_aug_warmup_epochs > 0:
+                aug_scale = min(1.0, epoch / float(cfg.photo_aug_warmup_epochs))
+            else:
+                aug_scale = 1.0
+            train_ds.set_photo_aug_scale(aug_scale)
+            print(f"[AUG] photo_aug_prob={train_ds.photo_aug_prob_current:.3f} (scale={aug_scale:.2f})")
 
         train_loss = train_one_epoch(
             model,
