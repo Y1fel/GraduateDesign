@@ -54,12 +54,18 @@ class TrainConfig:
     hflip_prob: float = 0.5
 
     photo_aug_prob: float = 0.35
-    brightness_jitter: float = 0.15
-    contrast_jitter: float = 0.12
-    saturation_jitter: float = 0.10
-    gamma_min: float = 0.90
-    gamma_max: float = 1.10
-    photo_op_prob: float = 0.60
+    brightness_jitter: float = 0.10
+    contrast_jitter: float = 0.08
+    saturation_jitter: float = 0.06
+    gamma_min: float = 0.95
+    gamma_max: float = 1.05
+    photo_op_prob: float = 0.50
+    blur_prob: float = 0.03
+    blur_radius_min: float = 0.1
+    blur_radius_max: float = 0.6
+    jpeg_prob: float = 0.03
+    jpeg_quality_min: int = 90
+    jpeg_quality_max: int = 98
     photo_aug_warmup_epochs: int = 20
 
     ce_variant: str = "ce"  # ce | focal | ohem
@@ -69,6 +75,7 @@ class TrainConfig:
     focal_gamma: float = 2.0
     ohem_min_kept: int = 100000
     ohem_thresh: float = 0.7
+    boundary_weight: float = 1.5
 
     save_vis_every: int = 50
     save_vis_max_items: int = 8
@@ -344,7 +351,7 @@ def main() -> None:
         "[LOSS] effective setup: "
         f"preset={cfg.loss_preset} | ce_variant={cfg.ce_variant} | "
         f"class_balanced_ce={cfg.use_class_balanced_ce} | class_weights={class_weights_state} | "
-        f"ce_weight={cfg.ce_weight} | dice_weight={cfg.dice_weight}"
+        f"ce_weight={cfg.ce_weight} | dice_weight={cfg.dice_weight} | boundary_weight={cfg.boundary_weight}"
     )
 
     # datasets
@@ -364,6 +371,10 @@ def main() -> None:
         saturation_jitter=cfg.saturation_jitter,
         gamma_range=(cfg.gamma_min, cfg.gamma_max),
         photo_op_prob=cfg.photo_op_prob,
+        blur_prob=cfg.blur_prob,
+        blur_radius_range=(cfg.blur_radius_min, cfg.blur_radius_max),
+        jpeg_prob=cfg.jpeg_prob,
+        jpeg_quality_range=(cfg.jpeg_quality_min, cfg.jpeg_quality_max),
         multi_scale_range=(cfg.train_multi_scale_min, cfg.train_multi_scale_max),
         random_crop_size=(cfg.crop_w, cfg.crop_h),
     )
@@ -417,6 +428,7 @@ def main() -> None:
         focal_gamma=cfg.focal_gamma,
         ohem_min_kept=cfg.ohem_min_kept,
         ohem_thresh=cfg.ohem_thresh,
+        boundary_weight=cfg.boundary_weight,
     ).to(device)
 
     optimizer = torch.optim.SGD(
@@ -456,7 +468,10 @@ def main() -> None:
         val_miou = float(val_metrics["miou"])
 
         dt = time.time() - t0
-        print(f"[EPOCH {epoch:03d}/{cfg.epochs}] loss={train_loss:.4f}  val_mIoU={val_miou:.4f}  time={dt:.1f}s")
+        print(
+            f"[EPOCH {epoch:03d}/{cfg.epochs}] loss={train_loss:.4f}  val_mIoU={val_miou:.4f} "
+            f" val_BF1={val_metrics['boundary_fscore']:.4f} val_TrimapIoU={val_metrics['trimap_iou']:.4f}  time={dt:.1f}s"
+        )
         small_indices = [2, 9, 10]  # Pole, Pedestrian(Person+Rider), Bicyclist
         print_small_object_metrics("IoU", val_metrics["iou_per_class"], class_names_11, small_indices)
         print_small_object_metrics("Recall", val_metrics["recall_per_class"], class_names_11, small_indices)

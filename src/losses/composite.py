@@ -58,6 +58,7 @@ class CrossEntropyDiceLoss(nn.Module):
         focal_gamma: float = 2.0,
         ohem_min_kept: int = 100000,
         ohem_thresh: float = 0.7,
+        boundary_weight: float = 0.0,
     ):
         super().__init__()
         self.num_classes = int(num_classes)
@@ -66,6 +67,7 @@ class CrossEntropyDiceLoss(nn.Module):
         self.dice_weight = float(dice_weight)
         self.label_smoothing = float(label_smoothing)
         self.ce_variant = str(ce_variant).lower()
+        self.boundary_weight = float(boundary_weight)
 
         if class_weights is not None:
             self.register_buffer("class_weights", class_weights.float())
@@ -93,20 +95,55 @@ class CrossEntropyDiceLoss(nn.Module):
             reduction="mean",
         )
 
+    def _compute_boundary_mask(self, target: torch.Tensor) -> torch.Tensor:
+        valid = target != self.ignore_index
+        t = target.clone()
+        t[~valid] = 0
+
+        boundary = torch.zeros_like(valid)
+
+        diff_h = (t[:, 1:, :] != t[:, :-1, :]) & valid[:, 1:, :] & valid[:, :-1, :]
+        boundary[:, 1:, :] |= diff_h
+        boundary[:, :-1, :] |= diff_h
+
+        diff_w = (t[:, :, 1:] != t[:, :, :-1]) & valid[:, :, 1:] & valid[:, :, :-1]
+        boundary[:, :, 1:] |= diff_w
+        boundary[:, :, :-1] |= diff_w
+
+        return boundary & valid
+
+    def _boundary_weighted_ce(self, logits: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        per_pixel_ce = F.cross_entropy(
+            logits,
+            target,
+            weight=self.class_weights,
+            ignore_index=self.ignore_index,
+            label_smoothing=self.label_smoothing,
+            reduction="none",
+        )
+
+        valid = target != self.ignore_index
+        if valid.sum() == 0:
+            return per_pixel_ce.sum() * 0.0
+
+        pixel_weight = torch.ones_like(per_pixel_ce)
+        if self.boundary_weight > 0:
+            boundary_mask = self._compute_boundary_mask(target)
+            pixel_weight = pixel_weight + self.boundary_weight * boundary_mask.float()
+
+        weighted_loss = (per_pixel_ce * pixel_weight * valid.float()).sum()
+        normalizer = (pixel_weight * valid.float()).sum().clamp_min(1.0)
+        return weighted_loss / normalizer
+
     def forward(self, logits: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        target = target.long()
         if self.ce_variant == "ce":
-            ce = F.cross_entropy(
-                logits,
-                target.long(),
-                weight=self.class_weights,
-                ignore_index=self.ignore_index,
-                label_smoothing=self.label_smoothing,
-            )
+            ce = self._boundary_weighted_ce(logits, target)
         elif self.ce_variant == "focal":
-            ce = self.focal(logits, target.long())
+            ce = self.focal(logits, target)
         elif self.ce_variant == "ohem":
-            ce = self.ohem(logits, target.long(), class_weight=self.class_weights)
+            ce = self.ohem(logits, target, class_weight=self.class_weights)
         else:
             raise ValueError(f"Unknown ce_variant: {self.ce_variant}")
-        dice = self.dice(logits, target.long())
+        dice = self.dice(logits, target)
         return self.ce_weight * ce + self.dice_weight * dice
