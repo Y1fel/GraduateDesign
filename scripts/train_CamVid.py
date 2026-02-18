@@ -45,6 +45,14 @@ class TrainConfig:
     resize_w: int = 960
     hflip_prob: float = 0.5
 
+    photo_aug_prob: float = 0.35
+    brightness_jitter: float = 0.15
+    contrast_jitter: float = 0.12
+    saturation_jitter: float = 0.10
+    gamma_min: float = 0.90
+    gamma_max: float = 1.10
+    photo_op_prob: float = 0.60
+
     save_vis_every: int = 50
     save_vis_max_items: int = 8
 
@@ -208,6 +216,12 @@ def main() -> None:
         ignore_index=cfg.ignore_index,
         training=True,
         label_lut=label_lut,
+        photo_aug_prob=cfg.photo_aug_prob,
+        brightness_jitter=cfg.brightness_jitter,
+        contrast_jitter=cfg.contrast_jitter,
+        saturation_jitter=cfg.saturation_jitter,
+        gamma_range=(cfg.gamma_min, cfg.gamma_max),
+        photo_op_prob=cfg.photo_op_prob,
     )
     val_ds = CamVidFolderDataset(
         root=cfg.data_root,
