@@ -37,6 +37,10 @@ class CamVidFolderDataset(Dataset):
         saturation_jitter: float = 0.0,
         gamma_range: Tuple[float, float] = (1.0, 1.0),
         photo_op_prob: float = 0.5,
+        blur_prob: float = 0.0,
+        blur_radius_range: Tuple[float, float] = (0.0, 0.0),
+        jpeg_prob: float = 0.0,
+        jpeg_quality_range: Tuple[int, int] = (95, 100),
         multi_scale_range: Tuple[float, float] = (1.0, 1.0),
         random_crop_size: Optional[Tuple[int, int]] = None,
     ) -> None:
@@ -58,6 +62,10 @@ class CamVidFolderDataset(Dataset):
         self.saturation_jitter = float(saturation_jitter)
         self.gamma_range = (float(gamma_range[0]), float(gamma_range[1]))
         self.photo_op_prob = float(photo_op_prob)
+        self.blur_prob = float(blur_prob)
+        self.blur_radius_range = (float(blur_radius_range[0]), float(blur_radius_range[1]))
+        self.jpeg_prob = float(jpeg_prob)
+        self.jpeg_quality_range = (int(jpeg_quality_range[0]), int(jpeg_quality_range[1]))
         self.multi_scale_range = (float(multi_scale_range[0]), float(multi_scale_range[1]))
         self.random_crop_size = random_crop_size
 
@@ -140,6 +148,10 @@ class CamVidFolderDataset(Dataset):
                 saturation=self.saturation_jitter,
                 gamma_range=self.gamma_range,
                 op_prob=self.photo_op_prob,
+                blur_prob=self.blur_prob,
+                blur_radius_range=self.blur_radius_range,
+                jpeg_prob=self.jpeg_prob,
+                jpeg_quality_range=self.jpeg_quality_range,
             )
 
         mask_old = color_mask_to_id(mask_rgb, self.color2id, self.ignore_index)

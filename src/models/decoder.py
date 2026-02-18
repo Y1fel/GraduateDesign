@@ -26,6 +26,18 @@ class ConvNormReLU(nn.Sequential):
         )
 
 
+class LearnableUpsampleBlock(nn.Module):
+    def __init__(self, channels: int, norm: NormType = "bn", num_groups: int = 32):
+        super().__init__()
+        self.pre = ConvNormReLU(channels, channels, k=1, norm=norm, num_groups=num_groups)
+        self.post = ConvNormReLU(channels, channels, k=3, p=1, norm=norm, num_groups=num_groups)
+
+    def forward(self, x: torch.Tensor, out_size: tuple[int, int]) -> torch.Tensor:
+        x = self.pre(x)
+        x = F.interpolate(x, size=out_size, mode="bilinear", align_corners=False)
+        return self.post(x)
+
+
 class DeepLabV3PlusDecoder(nn.Module):
     def __init__(
         self,
@@ -45,11 +57,13 @@ class DeepLabV3PlusDecoder(nn.Module):
         self.low_reduce = ConvNormReLU(
             low_level_in_channels, low_level_out_channels, k=1, norm=norm, num_groups=num_groups
         )
+        self.aspp_upsample = LearnableUpsampleBlock(aspp_out_channels, norm=norm, num_groups=num_groups)
 
         if self.use_mid_level_fusion:
             self.mid_reduce = ConvNormReLU(
                 mid_level_in_channels, mid_level_out_channels, k=1, norm=norm, num_groups=num_groups
             )
+            self.mid_upsample = LearnableUpsampleBlock(mid_level_out_channels, norm=norm, num_groups=num_groups)
             in_ch = aspp_out_channels + low_level_out_channels + mid_level_out_channels
         else:
             in_ch = aspp_out_channels + low_level_out_channels
@@ -62,14 +76,15 @@ class DeepLabV3PlusDecoder(nn.Module):
 
     def forward(self, low_level: torch.Tensor, aspp_feat: torch.Tensor, mid_level: torch.Tensor | None = None):
         low = self.low_reduce(low_level)
-        aspp_up = F.interpolate(aspp_feat, size=low.shape[-2:], mode="bilinear", align_corners=False)
+        out_size = low.shape[-2:]
+        aspp_up = self.aspp_upsample(aspp_feat, out_size)
 
         feats = [aspp_up, low]
         if self.use_mid_level_fusion:
             if mid_level is None:
                 raise ValueError("mid_level is required when use_mid_level_fusion=True")
             mid = self.mid_reduce(mid_level)
-            mid = F.interpolate(mid, size=low.shape[-2:], mode="bilinear", align_corners=False)
+            mid = self.mid_upsample(mid, out_size)
             feats.append(mid)
 
         x = torch.cat(feats, dim=1)

@@ -4,7 +4,7 @@ from typing import Tuple
 import numpy as np
 import torch
 from PIL import Image
-from PIL import ImageEnhance
+from PIL import ImageEnhance, ImageFilter
 
 
 def normalize_img(img_t: torch.Tensor) -> torch.Tensor:
@@ -37,6 +37,10 @@ def photometric_augment(
     saturation: float,
     gamma_range: Tuple[float, float],
     op_prob: float = 0.5,
+    blur_prob: float = 0.0,
+    blur_radius_range: Tuple[float, float] = (0.0, 0.0),
+    jpeg_prob: float = 0.0,
+    jpeg_quality_range: Tuple[int, int] = (95, 100),
 ) -> Image.Image:
     if random.random() >= _clamp_unit(prob):
         return img
@@ -54,6 +58,30 @@ def photometric_augment(
         out = ImageEnhance.Contrast(out).enhance(_sample_factor(contrast))
     if saturation > 0 and random.random() < op_prob:
         out = ImageEnhance.Color(out).enhance(_sample_factor(saturation))
+
+
+    blur_prob = _clamp_unit(blur_prob)
+    if blur_prob > 0 and random.random() < blur_prob:
+        br0, br1 = float(blur_radius_range[0]), float(blur_radius_range[1])
+        lo_b, hi_b = (br0, br1) if br0 <= br1 else (br1, br0)
+        lo_b = max(0.0, lo_b)
+        hi_b = max(lo_b, hi_b)
+        radius = random.uniform(lo_b, hi_b)
+        if radius > 0:
+            out = out.filter(ImageFilter.GaussianBlur(radius=radius))
+
+    jpeg_prob = _clamp_unit(jpeg_prob)
+    if jpeg_prob > 0 and random.random() < jpeg_prob:
+        q0, q1 = int(jpeg_quality_range[0]), int(jpeg_quality_range[1])
+        lo_q, hi_q = (q0, q1) if q0 <= q1 else (q1, q0)
+        lo_q = max(40, min(100, lo_q))
+        hi_q = max(lo_q, min(100, hi_q))
+        import io
+
+        buf = io.BytesIO()
+        out.save(buf, format="JPEG", quality=random.randint(lo_q, hi_q))
+        buf.seek(0)
+        out = Image.open(buf).convert("RGB")
 
     g0, g1 = float(gamma_range[0]), float(gamma_range[1])
     lo, hi = (g0, g1) if g0 <= g1 else (g1, g0)
