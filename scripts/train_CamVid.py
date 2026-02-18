@@ -72,7 +72,7 @@ class TrainConfig:
     save_vis_max_items: int = 8
 
     outputs_root: Path = PROJECT_ROOT / "outputs"
-    seed: int = 40
+    seed: int = 42
 
 
 def compute_class_pixel_distribution(

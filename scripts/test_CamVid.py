@@ -202,10 +202,8 @@ def main() -> None:
     print(f"[INFO] out   = {cfg.out_dir}")
     print(f"[INFO] os={cfg.output_stride}  head_norm={cfg.head_norm}")
 
-    # 32类颜色表（用于 RGB->old_id 解码）
     color2id, id2color_32, _id2name = load_class_dict_csv(cfg.data_root / "class_dict.csv")
 
-    # ✅ 11类分组（必须与训练一致：old_id -> new_id）
     GROUPS_11 = [
         [21],                 # 0 Sky
         [4, 31, 1, 3, 28],     # 1 Building: Building, Wall, Archway, Bridge, Tunnel
@@ -221,7 +219,6 @@ def main() -> None:
     ]
     label_lut = build_merge_lut(GROUPS_11, ignore_index=cfg.ignore_index)
 
-    # ✅ 11类可视化颜色（代表色，必须与训练一致）
     rep_old_ids_11 = [21, 4, 8, 17, 19, 26, 20, 9, 5, 16, 2]
     id2color_11 = [id2color_32[i] for i in rep_old_ids_11]
 
