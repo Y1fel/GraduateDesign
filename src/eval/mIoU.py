@@ -58,11 +58,17 @@ def compute_segmentation_metrics(
     rec_valid = recall_denom > 0
     recall[rec_valid] = tp[rec_valid] / recall_denom[rec_valid]
 
+    precision_denom = tp + fp
+    precision = np.full(tp.shape, np.nan, dtype=np.float64)
+    pre_valid = precision_denom > 0
+    precision[pre_valid] = tp[pre_valid] / precision_denom[pre_valid]
+
     miou = float(np.nanmean(iou)) if np.any(iou_valid) else float("nan")
     return {
         "miou": miou,
         "iou_per_class": iou,
         "recall_per_class": recall,
+        "precision_per_class": precision,
     }
 
 

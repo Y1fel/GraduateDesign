@@ -1,4 +1,5 @@
 import math
+import argparse
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -62,7 +63,8 @@ class TrainConfig:
     photo_aug_warmup_epochs: int = 20
 
     ce_variant: str = "ce"  # ce | focal | ohem
-    use_class_balanced_ce: bool = True
+    use_class_balanced_ce: bool = False
+    loss_preset: str = "baseline"  # baseline | cbce | focal | ohem
     cb_beta: float = 0.999
     focal_gamma: float = 2.0
     ohem_min_kept: int = 100000
@@ -73,6 +75,37 @@ class TrainConfig:
 
     outputs_root: Path = PROJECT_ROOT / "outputs"
     seed: int = 42
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Train DeepLabV3+ on CamVid")
+    parser.add_argument(
+        "--loss_preset",
+        type=str,
+        default=None,
+        choices=["baseline", "cbce", "focal", "ohem"],
+        help="Loss preset: baseline(plain CE), cbce(class-balanced CE), focal, or ohem.",
+    )
+    return parser.parse_args()
+
+
+def apply_loss_preset(cfg: TrainConfig, loss_preset: str) -> None:
+    cfg.loss_preset = loss_preset
+
+    if loss_preset == "baseline":
+        cfg.ce_variant = "ce"
+        cfg.use_class_balanced_ce = False
+    elif loss_preset == "cbce":
+        cfg.ce_variant = "ce"
+        cfg.use_class_balanced_ce = True
+    elif loss_preset == "focal":
+        cfg.ce_variant = "focal"
+        cfg.use_class_balanced_ce = False
+    elif loss_preset == "ohem":
+        cfg.ce_variant = "ohem"
+        cfg.use_class_balanced_ce = False
+    else:
+        raise ValueError(f"Unsupported loss_preset: {loss_preset}")
 
 
 def compute_class_pixel_distribution(
@@ -234,7 +267,9 @@ def save_vis_using_best_ckpt(
 
 
 def main() -> None:
+    args = parse_args()
     cfg = TrainConfig()
+    apply_loss_preset(cfg, args.loss_preset or cfg.loss_preset)
     set_seed(cfg.seed)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -292,11 +327,25 @@ def main() -> None:
     for idx in [2, 9, 10]:
         print(f"[TAIL-CHECK] {class_names_11[idx]} ratio={pixel_ratio[idx] * 100:.3f}%")
 
+    print(f"[LOSS-PRESET] selected={cfg.loss_preset}")
+    if cfg.loss_preset == "baseline":
+        print("[LOSS-PRESET] baseline enforces ce_variant=ce and class_weights=None.")
+    elif cfg.loss_preset == "cbce":
+        print("[LOSS-PRESET] cbce enabled: use only after validating long-tail gains.")
+
     class_weights_t = None
     if cfg.use_class_balanced_ce:
         cb_w = class_balanced_weights_from_counts(train_class_pixel_counts, beta=cfg.cb_beta)
         class_weights_t = torch.tensor(cb_w, dtype=torch.float32, device=device)
         print("[LOSS] class-balanced CE weights:", np.array2string(cb_w, precision=4, separator=", "))
+
+    class_weights_state = "enabled" if class_weights_t is not None else "disabled(None)"
+    print(
+        "[LOSS] effective setup: "
+        f"preset={cfg.loss_preset} | ce_variant={cfg.ce_variant} | "
+        f"class_balanced_ce={cfg.use_class_balanced_ce} | class_weights={class_weights_state} | "
+        f"ce_weight={cfg.ce_weight} | dice_weight={cfg.dice_weight}"
+    )
 
     # datasets
     train_ds = CamVidFolderDataset(
@@ -411,6 +460,8 @@ def main() -> None:
         small_indices = [2, 9, 10]  # Pole, Pedestrian(Person+Rider), Bicyclist
         print_small_object_metrics("IoU", val_metrics["iou_per_class"], class_names_11, small_indices)
         print_small_object_metrics("Recall", val_metrics["recall_per_class"], class_names_11, small_indices)
+        if cfg.use_class_balanced_ce:
+            print_small_object_metrics("Precision", val_metrics["precision_per_class"], class_names_11, small_indices)
         if device.type == "cuda":
             peak = torch.cuda.max_memory_allocated() / 1024**3
             print(f"[MEM] peak_allocated = {peak:.2f} GB")
