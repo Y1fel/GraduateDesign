@@ -6,7 +6,13 @@ import torch
 from PIL import Image
 from torch.utils.data import Dataset
 
-from src.datasets.transforms import resize_pair, maybe_hflip_pair, pil_to_tensor, normalize_img
+from src.datasets.transforms import (
+    resize_pair,
+    maybe_hflip_pair,
+    pil_to_tensor,
+    normalize_img,
+    photometric_augment,
+)
 from src.utils.Id2Mask import color_mask_to_id
 
 RGB = Tuple[int, int, int]
@@ -24,6 +30,12 @@ class CamVidFolderDataset(Dataset):
         ignore_index: int,
         training: bool,
         label_lut: Optional[np.ndarray] = None,  # shape (256,), old_id -> new_id or ignore
+        photo_aug_prob: float = 0.0,
+        brightness_jitter: float = 0.0,
+        contrast_jitter: float = 0.0,
+        saturation_jitter: float = 0.0,
+        gamma_range: Tuple[float, float] = (1.0, 1.0),
+        photo_op_prob: float = 0.5,
     ) -> None:
         assert split in ("train", "val", "test"), f"split must be train/val/test, got {split}"
 
@@ -35,6 +47,14 @@ class CamVidFolderDataset(Dataset):
         self.hflip_prob = float(hflip_prob)
         self.ignore_index = int(ignore_index)
         self.training = bool(training)
+
+        self.photo_aug_prob = float(photo_aug_prob)
+        self.photo_aug_prob_current = float(photo_aug_prob)
+        self.brightness_jitter = float(brightness_jitter)
+        self.contrast_jitter = float(contrast_jitter)
+        self.saturation_jitter = float(saturation_jitter)
+        self.gamma_range = (float(gamma_range[0]), float(gamma_range[1]))
+        self.photo_op_prob = float(photo_op_prob)
 
         if label_lut is not None:
             lut = np.asarray(label_lut)
@@ -90,6 +110,10 @@ class CamVidFolderDataset(Dataset):
 
         raise FileNotFoundError(f"Mask not found for {img_path.name} in {self.masks_dir}")
 
+    def set_photo_aug_scale(self, scale: float) -> None:
+        s = max(0.0, min(1.0, float(scale)))
+        self.photo_aug_prob_current = self.photo_aug_prob * s
+
     def __getitem__(self, idx: int):
         img_path = self.img_paths[idx]
         mask_path = self._resolve_mask(img_path)
@@ -101,6 +125,15 @@ class CamVidFolderDataset(Dataset):
 
         if self.training:
             img, mask_rgb = maybe_hflip_pair(img, mask_rgb, self.hflip_prob)
+            img = photometric_augment(
+                img,
+                prob=self.photo_aug_prob_current,
+                brightness=self.brightness_jitter,
+                contrast=self.contrast_jitter,
+                saturation=self.saturation_jitter,
+                gamma_range=self.gamma_range,
+                op_prob=self.photo_op_prob,
+            )
 
         img_t = pil_to_tensor(img)
         img_t = normalize_img(img_t)

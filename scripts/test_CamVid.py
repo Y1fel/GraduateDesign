@@ -14,6 +14,25 @@ from src.utils.Id2Mask import load_class_dict_csv, id_mask_to_color
 from src.viz.visualizer import save_predictions_triplet
 
 
+def build_merge_lut(groups_11, ignore_index: int = 255) -> np.ndarray:
+    if len(groups_11) != 11:
+        raise ValueError(f"groups_11 must have length=11, got {len(groups_11)}")
+
+    lut = np.full((256,), fill_value=ignore_index, dtype=np.uint8)
+    used = set()
+
+    for new_id, group in enumerate(groups_11):
+        for old_id in group:
+            old_id = int(old_id)
+            if old_id in used:
+                raise ValueError(f"old_id {old_id} appears in multiple groups")
+            used.add(old_id)
+            lut[old_id] = np.uint8(new_id)
+
+    lut[30] = np.uint8(ignore_index)
+    return lut
+
+
 @dataclass
 class TestConfig:
     data_root: Path
@@ -101,7 +120,7 @@ def save_all_predictions(
             Image.fromarray(pr_id).save(pred_id_dir / f"{stem}.png")
 
 
-def build_loader(cfg: TestConfig, color2id) -> DataLoader:
+def build_loader(cfg: TestConfig, color2id, label_lut) -> DataLoader:
     test_ds = CamVidFolderDataset(
         root=cfg.data_root,
         split="test",
@@ -111,6 +130,7 @@ def build_loader(cfg: TestConfig, color2id) -> DataLoader:
         hflip_prob=0.0,
         ignore_index=cfg.ignore_index,
         training=False,
+        label_lut=label_lut,
     )
     return DataLoader(
         test_ds,
@@ -177,7 +197,27 @@ def main() -> None:
     print(f"[INFO] os={cfg.output_stride}  head_norm={cfg.head_norm}")
 
     color2id, id2color, _id2name = load_class_dict_csv(cfg.data_root / "class_dict.csv")
-    test_loader = build_loader(cfg, color2id)
+
+    GROUPS_11 = [
+        [21],                 # 0 Sky
+        [4, 31, 1, 3, 28],    # 1 Building
+        [8, 23],              # 2 Pole
+        [17, 10, 11],         # 3 Road
+        [19, 18, 15],         # 4 Pavement
+        [26, 29],             # 5 Tree
+        [20, 24, 12],         # 6 SignSymbol
+        [9],                  # 7 Fence
+        [5, 22, 27, 25, 14, 13],  # 8 Car
+        [16, 7, 0, 6],        # 9 Pedestrian
+        [2],                  # 10 Bicyclist
+    ]
+    rep_old_ids_11 = [21, 4, 8, 17, 19, 26, 20, 9, 5, 16, 2]
+    id2color_11 = [id2color[i] for i in rep_old_ids_11]
+    label_lut = build_merge_lut(GROUPS_11, ignore_index=cfg.ignore_index)
+
+    print("[INFO] Using 32->11 label LUT for evaluation")
+
+    test_loader = build_loader(cfg, color2id, label_lut)
     model = load_model(cfg, device)
 
     test_miou = compute_miou(model, test_loader, device, cfg.num_classes, cfg.ignore_index)
@@ -188,7 +228,7 @@ def main() -> None:
         loader=test_loader,
         device=device,
         out_dir=cfg.out_dir / "triplets",
-        id2color=id2color,
+        id2color=id2color_11,
         ignore_index=cfg.ignore_index,
         epoch=0,
         max_items=cfg.save_triplet_max,
@@ -199,7 +239,7 @@ def main() -> None:
         loader=test_loader,
         device=device,
         out_dir=cfg.out_dir,
-        id2color=id2color,
+        id2color=id2color_11,
         ignore_index=cfg.ignore_index,
         use_amp=cfg.use_amp,
     )
