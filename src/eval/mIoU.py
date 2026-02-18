@@ -25,13 +25,13 @@ def update_confusion_matrix(
 
 
 @torch.no_grad()
-def compute_miou(
+def compute_segmentation_metrics(
     model,
     loader,
     device: torch.device,
     num_classes: int,
     ignore_index: int,
-) -> float:
+) -> dict:
     model.eval()
     conf = torch.zeros((num_classes, num_classes), dtype=torch.int64, device=device)
 
@@ -50,6 +50,36 @@ def compute_miou(
     denom = tp + fp + fn
 
     iou = np.full(tp.shape, np.nan, dtype=np.float64)
-    valid = denom > 0
-    iou[valid] = tp[valid] / denom[valid]
-    return float(np.nanmean(iou)) if np.any(valid) else float("nan")
+    iou_valid = denom > 0
+    iou[iou_valid] = tp[iou_valid] / denom[iou_valid]
+
+    recall_denom = tp + fn
+    recall = np.full(tp.shape, np.nan, dtype=np.float64)
+    rec_valid = recall_denom > 0
+    recall[rec_valid] = tp[rec_valid] / recall_denom[rec_valid]
+
+    miou = float(np.nanmean(iou)) if np.any(iou_valid) else float("nan")
+    return {
+        "miou": miou,
+        "iou_per_class": iou,
+        "recall_per_class": recall,
+    }
+
+
+@torch.no_grad()
+def compute_miou(
+    model,
+    loader,
+    device: torch.device,
+    num_classes: int,
+    ignore_index: int,
+) -> float:
+    return float(
+        compute_segmentation_metrics(
+            model=model,
+            loader=loader,
+            device=device,
+            num_classes=num_classes,
+            ignore_index=ignore_index,
+        )["miou"]
+    )

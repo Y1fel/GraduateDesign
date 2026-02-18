@@ -8,6 +8,7 @@ class ResNetBackbone(nn.Module):
     ResNet backbone for DeepLabv3+.
     Returns:
       - low_level: feature map at stride 4 (layer1 output)
+      - mid_level: feature map at stride 8 (layer2 output)
       - high_level: feature map at stride 16 or 8 (layer4 output, with dilation)
     """
     def __init__(self, pretrained: bool = True, output_stride: int = 16):
@@ -52,8 +53,8 @@ class ResNetBackbone(nn.Module):
         x = self.layer1(x)
         low_level = x  # (N, 256, H/4, W/4)
 
-        x = self.layer2(x)
-        x = self.layer3(x)
+        mid_level = self.layer2(x)  # (N, 512, H/8, W/8)
+        x = self.layer3(mid_level)
         high_level = self.layer4(x)  # (N, 2048, H/OS, W/OS)
 
-        return low_level, high_level
+        return low_level, mid_level, high_level

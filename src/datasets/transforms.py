@@ -82,6 +82,24 @@ def resize_pair(
     return img, mask
 
 
+def random_scale_pair(
+    img: Image.Image,
+    mask: Image.Image,
+    scale_range: Tuple[float, float],
+) -> Tuple[Image.Image, Image.Image]:
+    lo, hi = float(scale_range[0]), float(scale_range[1])
+    if lo <= 0:
+        lo = 1e-3
+    if hi < lo:
+        lo, hi = hi, lo
+
+    s = random.uniform(lo, hi)
+    w, h = img.size
+    new_w = max(1, int(round(w * s)))
+    new_h = max(1, int(round(h * s)))
+    return resize_pair(img, mask, (new_w, new_h))
+
+
 def maybe_hflip_pair(
     img: Image.Image,
     mask: Image.Image,
