@@ -36,21 +36,41 @@ class DeepLabV3PlusDecoder(nn.Module):
         dropout: float = 0.1,
         norm: NormType = "bn",
         num_groups: int = 32,
+        use_mid_level_fusion: bool = True,
+        mid_level_in_channels: int = 512,
+        mid_level_out_channels: int = 64,
     ):
         super().__init__()
+        self.use_mid_level_fusion = bool(use_mid_level_fusion)
         self.low_reduce = ConvNormReLU(
             low_level_in_channels, low_level_out_channels, k=1, norm=norm, num_groups=num_groups
         )
 
-        in_ch = aspp_out_channels + low_level_out_channels
+        if self.use_mid_level_fusion:
+            self.mid_reduce = ConvNormReLU(
+                mid_level_in_channels, mid_level_out_channels, k=1, norm=norm, num_groups=num_groups
+            )
+            in_ch = aspp_out_channels + low_level_out_channels + mid_level_out_channels
+        else:
+            in_ch = aspp_out_channels + low_level_out_channels
+
         self.refine = nn.Sequential(
             ConvNormReLU(in_ch, decoder_channels, k=3, p=1, norm=norm, num_groups=num_groups),
             ConvNormReLU(decoder_channels, decoder_channels, k=3, p=1, norm=norm, num_groups=num_groups),
             nn.Dropout(p=dropout),
         )
 
-    def forward(self, low_level: torch.Tensor, aspp_feat: torch.Tensor):
+    def forward(self, low_level: torch.Tensor, aspp_feat: torch.Tensor, mid_level: torch.Tensor | None = None):
         low = self.low_reduce(low_level)
         aspp_up = F.interpolate(aspp_feat, size=low.shape[-2:], mode="bilinear", align_corners=False)
-        x = torch.cat([aspp_up, low], dim=1)
+
+        feats = [aspp_up, low]
+        if self.use_mid_level_fusion:
+            if mid_level is None:
+                raise ValueError("mid_level is required when use_mid_level_fusion=True")
+            mid = self.mid_reduce(mid_level)
+            mid = F.interpolate(mid, size=low.shape[-2:], mode="bilinear", align_corners=False)
+            feats.append(mid)
+
+        x = torch.cat(feats, dim=1)
         return self.refine(x)

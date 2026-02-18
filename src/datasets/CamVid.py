@@ -8,6 +8,7 @@ from torch.utils.data import Dataset
 
 from src.datasets.transforms import (
     resize_pair,
+    random_scale_pair,
     maybe_hflip_pair,
     pil_to_tensor,
     normalize_img,
@@ -36,6 +37,8 @@ class CamVidFolderDataset(Dataset):
         saturation_jitter: float = 0.0,
         gamma_range: Tuple[float, float] = (1.0, 1.0),
         photo_op_prob: float = 0.5,
+        multi_scale_range: Tuple[float, float] = (1.0, 1.0),
+        random_crop_size: Optional[Tuple[int, int]] = None,
     ) -> None:
         assert split in ("train", "val", "test"), f"split must be train/val/test, got {split}"
 
@@ -55,6 +58,8 @@ class CamVidFolderDataset(Dataset):
         self.saturation_jitter = float(saturation_jitter)
         self.gamma_range = (float(gamma_range[0]), float(gamma_range[1]))
         self.photo_op_prob = float(photo_op_prob)
+        self.multi_scale_range = (float(multi_scale_range[0]), float(multi_scale_range[1]))
+        self.random_crop_size = random_crop_size
 
         if label_lut is not None:
             lut = np.asarray(label_lut)
@@ -124,6 +129,8 @@ class CamVidFolderDataset(Dataset):
         img, mask_rgb = resize_pair(img, mask_rgb, (self.resize_w, self.resize_h))
 
         if self.training:
+            if self.multi_scale_range != (1.0, 1.0):
+                img, mask_rgb = random_scale_pair(img, mask_rgb, self.multi_scale_range)
             img, mask_rgb = maybe_hflip_pair(img, mask_rgb, self.hflip_prob)
             img = photometric_augment(
                 img,
@@ -135,15 +142,38 @@ class CamVidFolderDataset(Dataset):
                 op_prob=self.photo_op_prob,
             )
 
-        img_t = pil_to_tensor(img)
-        img_t = normalize_img(img_t)
-
         mask_old = color_mask_to_id(mask_rgb, self.color2id, self.ignore_index)
 
         if self.label_lut is not None:
             mask_new = self.label_lut[mask_old]
         else:
             mask_new = mask_old
+
+        if self.training and self.random_crop_size is not None:
+            crop_w, crop_h = int(self.random_crop_size[0]), int(self.random_crop_size[1])
+            img_np = np.asarray(img, dtype=np.uint8)
+            h, w = img_np.shape[:2]
+
+            if h < crop_h or w < crop_w:
+                pad_h = max(0, crop_h - h)
+                pad_w = max(0, crop_w - w)
+                img_np = np.pad(img_np, ((0, pad_h), (0, pad_w), (0, 0)), mode="constant", constant_values=0)
+                mask_new = np.pad(
+                    mask_new,
+                    ((0, pad_h), (0, pad_w)),
+                    mode="constant",
+                    constant_values=self.ignore_index,
+                )
+                h, w = img_np.shape[:2]
+
+            y1 = np.random.randint(0, h - crop_h + 1)
+            x1 = np.random.randint(0, w - crop_w + 1)
+            img_np = img_np[y1:y1 + crop_h, x1:x1 + crop_w]
+            mask_new = mask_new[y1:y1 + crop_h, x1:x1 + crop_w]
+            img = Image.fromarray(img_np, mode="RGB")
+
+        img_t = pil_to_tensor(img)
+        img_t = normalize_img(img_t)
 
         mask_t = torch.from_numpy(mask_new.astype(np.int64))  # long for CE
 

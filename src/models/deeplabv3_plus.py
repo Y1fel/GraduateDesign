@@ -20,6 +20,7 @@ class DeepLabV3Plus(nn.Module):
 
         head_norm: NormType = "bn",
         head_num_groups: int = 32,
+        use_mid_level_fusion: bool = True,
     ):
         super().__init__()
 
@@ -49,6 +50,8 @@ class DeepLabV3Plus(nn.Module):
             dropout=dropout,
             norm=head_norm,
             num_groups=head_num_groups,
+            use_mid_level_fusion=use_mid_level_fusion,
+            mid_level_in_channels=512,
         )
 
         self.classifier = nn.Conv2d(decoder_channels, num_classes, kernel_size=1)
@@ -61,9 +64,9 @@ class DeepLabV3Plus(nn.Module):
     def forward(self, x: torch.Tensor):
         input_size = x.shape[-2:]
 
-        low_level, high_level = self.backbone(x)
+        low_level, mid_level, high_level = self.backbone(x)
         aspp_feat = self.aspp(high_level)
-        dec_feat = self.decoder(low_level, aspp_feat)
+        dec_feat = self.decoder(low_level, aspp_feat, mid_level=mid_level)
         logits = self.classifier(dec_feat)
         logits = F.interpolate(logits, size=input_size, mode="bilinear", align_corners=False)
         return logits

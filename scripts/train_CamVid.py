@@ -2,6 +2,7 @@ import math
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Sequence
 
 import numpy as np
 import torch
@@ -13,9 +14,10 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 from src.commom.output_manager import OutputManager
 from src.commom.repro import set_seed
 from src.datasets.CamVid import CamVidFolderDataset
-from src.eval.mIoU import compute_miou
+from src.eval.mIoU import compute_segmentation_metrics
 from src.models.deeplabv3_plus import DeepLabV3Plus
 from src.utils.Id2Mask import load_class_dict_csv
+from src.utils.Id2Mask import color_mask_to_id
 from src.viz.visualizer import save_predictions_triplet
 from src.losses.composite import CrossEntropyDiceLoss
 
@@ -40,9 +42,14 @@ class TrainConfig:
     output_stride: int = 8
     backbone_pretrained: bool = True
     head_norm: str = "bn"
+    use_mid_level_fusion: bool = True
 
-    resize_h: int = 720
-    resize_w: int = 960
+    resize_h: int = 960
+    resize_w: int = 1280
+    crop_h: int = 720
+    crop_w: int = 960
+    train_multi_scale_min: float = 0.5
+    train_multi_scale_max: float = 2.0
     hflip_prob: float = 0.5
 
     photo_aug_prob: float = 0.35
@@ -54,11 +61,71 @@ class TrainConfig:
     photo_op_prob: float = 0.60
     photo_aug_warmup_epochs: int = 20
 
+    ce_variant: str = "ce"  # ce | focal | ohem
+    use_class_balanced_ce: bool = True
+    cb_beta: float = 0.999
+    focal_gamma: float = 2.0
+    ohem_min_kept: int = 100000
+    ohem_thresh: float = 0.7
+
     save_vis_every: int = 50
     save_vis_max_items: int = 8
 
     outputs_root: Path = PROJECT_ROOT / "outputs"
     seed: int = 40
+
+
+def compute_class_pixel_distribution(
+    masks_dir: Path,
+    color2id,
+    label_lut: np.ndarray,
+    num_classes: int,
+    ignore_index: int,
+) -> np.ndarray:
+    mask_paths = sorted([p for p in masks_dir.iterdir() if p.is_file()])
+    if not mask_paths:
+        raise RuntimeError(f"No masks found for pixel statistics in {masks_dir}")
+
+    counts = np.zeros((num_classes,), dtype=np.int64)
+    for p in mask_paths:
+        mask_rgb = np.array(torchvision_safe_open_rgb(p), dtype=np.uint8)
+        mask_old = color_mask_to_id(mask_rgb, color2id, ignore_index)
+        mapped = label_lut[mask_old]
+        valid = mapped != ignore_index
+        if np.any(valid):
+            binc = np.bincount(mapped[valid], minlength=num_classes)
+            counts += binc[:num_classes]
+    return counts
+
+
+def torchvision_safe_open_rgb(path: Path):
+    from PIL import Image
+
+    return Image.open(path).convert("RGB")
+
+
+def class_balanced_weights_from_counts(counts: np.ndarray, beta: float, eps: float = 1e-8) -> np.ndarray:
+    counts = counts.astype(np.float64)
+    beta = float(beta)
+    eff_num = 1.0 - np.power(beta, counts)
+    weights = (1.0 - beta) / np.maximum(eff_num, eps)
+    weights[counts <= 0] = 0.0
+
+    nz = weights > 0
+    if np.any(nz):
+        weights[nz] = weights[nz] * (nz.sum() / np.sum(weights[nz]))
+    return weights.astype(np.float32)
+
+
+def print_small_object_metrics(metric_name: str, values: Sequence[float], names: Sequence[str], indices: Sequence[int]) -> None:
+    msg = []
+    for cls_name, idx in zip(names, indices):
+        v = values[idx]
+        if np.isnan(v):
+            msg.append(f"{cls_name}=nan")
+        else:
+            msg.append(f"{cls_name}={v:.4f}")
+    print(f"[VAL-small] {metric_name}: " + " | ".join(msg))
 
 
 def build_merge_lut(groups_11, ignore_index: int = 255) -> np.ndarray:
@@ -206,6 +273,31 @@ def main() -> None:
     out.init_metrics()
     print(f"[INFO] run_dir = {out.run_dir}")
 
+    class_names_11 = [
+        "Sky", "Building", "Pole", "Road", "Pavement", "Tree", "SignSymbol", "Fence", "Car", "Pedestrian", "Bicyclist"
+    ]
+
+    train_class_pixel_counts = compute_class_pixel_distribution(
+        masks_dir=cfg.data_root / "train_labels",
+        color2id=color2id,
+        label_lut=label_lut,
+        num_classes=cfg.num_classes,
+        ignore_index=cfg.ignore_index,
+    )
+    pixel_ratio = train_class_pixel_counts / np.maximum(train_class_pixel_counts.sum(), 1)
+    print("[DATA] train pixel ratios:")
+    for i, name in enumerate(class_names_11):
+        print(f"  - {name:<10} count={int(train_class_pixel_counts[i]):>10d} ratio={pixel_ratio[i] * 100:6.3f}%")
+
+    for idx in [2, 9, 10]:
+        print(f"[TAIL-CHECK] {class_names_11[idx]} ratio={pixel_ratio[idx] * 100:.3f}%")
+
+    class_weights_t = None
+    if cfg.use_class_balanced_ce:
+        cb_w = class_balanced_weights_from_counts(train_class_pixel_counts, beta=cfg.cb_beta)
+        class_weights_t = torch.tensor(cb_w, dtype=torch.float32, device=device)
+        print("[LOSS] class-balanced CE weights:", np.array2string(cb_w, precision=4, separator=", "))
+
     # datasets
     train_ds = CamVidFolderDataset(
         root=cfg.data_root,
@@ -223,6 +315,8 @@ def main() -> None:
         saturation_jitter=cfg.saturation_jitter,
         gamma_range=(cfg.gamma_min, cfg.gamma_max),
         photo_op_prob=cfg.photo_op_prob,
+        multi_scale_range=(cfg.train_multi_scale_min, cfg.train_multi_scale_max),
+        random_crop_size=(cfg.crop_w, cfg.crop_h),
     )
     val_ds = CamVidFolderDataset(
         root=cfg.data_root,
@@ -259,6 +353,7 @@ def main() -> None:
         backbone_pretrained=cfg.backbone_pretrained,
         output_stride=cfg.output_stride,
         head_norm=cfg.head_norm,
+        use_mid_level_fusion=cfg.use_mid_level_fusion,
     ).to(device)
 
     criterion = CrossEntropyDiceLoss(
@@ -268,6 +363,11 @@ def main() -> None:
         dice_weight=cfg.dice_weight,
         label_smoothing=cfg.label_smoothing,
         dice_include_background=True,
+        ce_variant=cfg.ce_variant,
+        class_weights=class_weights_t,
+        focal_gamma=cfg.focal_gamma,
+        ohem_min_kept=cfg.ohem_min_kept,
+        ohem_thresh=cfg.ohem_thresh,
     ).to(device)
 
     optimizer = torch.optim.SGD(
@@ -303,10 +403,14 @@ def main() -> None:
             total_iters=total_iters,
             base_lr=cfg.lr_0,
         )
-        val_miou = compute_miou(model, val_loader, device, cfg.num_classes, cfg.ignore_index)
+        val_metrics = compute_segmentation_metrics(model, val_loader, device, cfg.num_classes, cfg.ignore_index)
+        val_miou = float(val_metrics["miou"])
 
         dt = time.time() - t0
         print(f"[EPOCH {epoch:03d}/{cfg.epochs}] loss={train_loss:.4f}  val_mIoU={val_miou:.4f}  time={dt:.1f}s")
+        small_indices = [2, 9, 10]  # Pole, Pedestrian(Person+Rider), Bicyclist
+        print_small_object_metrics("IoU", val_metrics["iou_per_class"], class_names_11, small_indices)
+        print_small_object_metrics("Recall", val_metrics["recall_per_class"], class_names_11, small_indices)
         if device.type == "cuda":
             peak = torch.cuda.max_memory_allocated() / 1024**3
             print(f"[MEM] peak_allocated = {peak:.2f} GB")
