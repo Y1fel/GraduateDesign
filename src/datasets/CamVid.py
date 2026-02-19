@@ -1,9 +1,9 @@
 from pathlib import Path
-from typing import Dict, Tuple, Optional
+from typing import Dict, Tuple, Optional, Sequence
 
 import numpy as np
 import torch
-from PIL import Image
+from PIL import Image, ImageOps
 from torch.utils.data import Dataset
 
 from src.datasets.transforms import (
@@ -43,6 +43,9 @@ class CamVidFolderDataset(Dataset):
         jpeg_quality_range: Tuple[int, int] = (95, 100),
         multi_scale_range: Tuple[float, float] = (1.0, 1.0),
         random_crop_size: Optional[Tuple[int, int]] = None,
+        auto_contrast: bool = False,
+        auto_contrast_cutoff: float = 1.0,
+        ignore_filename_prefixes: Optional[Sequence[str]] = None,
     ) -> None:
         assert split in ("train", "val", "test"), f"split must be train/val/test, got {split}"
 
@@ -68,6 +71,9 @@ class CamVidFolderDataset(Dataset):
         self.jpeg_quality_range = (int(jpeg_quality_range[0]), int(jpeg_quality_range[1]))
         self.multi_scale_range = (float(multi_scale_range[0]), float(multi_scale_range[1]))
         self.random_crop_size = random_crop_size
+        self.auto_contrast = bool(auto_contrast)
+        self.auto_contrast_cutoff = float(auto_contrast_cutoff)
+        self.ignore_filename_prefixes = tuple(ignore_filename_prefixes or ())
 
         if label_lut is not None:
             lut = np.asarray(label_lut)
@@ -99,6 +105,17 @@ class CamVidFolderDataset(Dataset):
 
         exts = {".png", ".jpg", ".jpeg", ".bmp"}
         self.img_paths = sorted([p for p in self.images_dir.iterdir() if p.suffix.lower() in exts])
+
+        if self.ignore_filename_prefixes:
+            before = len(self.img_paths)
+            self.img_paths = [
+                p for p in self.img_paths
+                if not any(p.name.startswith(prefix) for prefix in self.ignore_filename_prefixes)
+            ]
+            ignored = before - len(self.img_paths)
+            if ignored > 0:
+                print(f"[DATA] split={self.split}: ignored {ignored} files by prefix filter {self.ignore_filename_prefixes}")
+
         if not self.img_paths:
             raise RuntimeError(f"No images found in {self.images_dir}")
 
@@ -140,6 +157,11 @@ class CamVidFolderDataset(Dataset):
             if self.multi_scale_range != (1.0, 1.0):
                 img, mask_rgb = random_scale_pair(img, mask_rgb, self.multi_scale_range)
             img, mask_rgb = maybe_hflip_pair(img, mask_rgb, self.hflip_prob)
+
+        if self.auto_contrast:
+            img = ImageOps.autocontrast(img, cutoff=self.auto_contrast_cutoff)
+
+        if self.training:
             img = photometric_augment(
                 img,
                 prob=self.photo_aug_prob_current,
