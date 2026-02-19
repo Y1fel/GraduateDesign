@@ -45,12 +45,12 @@ class TrainConfig:
     head_norm: str = "bn"
     use_mid_level_fusion: bool = True
 
-    resize_h: int = 960
-    resize_w: int = 1280
+    resize_h: int = 720
+    resize_w: int = 960
     crop_h: int = 720
     crop_w: int = 960
-    train_multi_scale_min: float = 0.5
-    train_multi_scale_max: float = 2.0
+    train_multi_scale_min: float = 1.0
+    train_multi_scale_max: float = 1.0
     hflip_prob: float = 0.5
 
     photo_aug_prob: float = 0.35
@@ -439,7 +439,7 @@ def main() -> None:
         jpeg_prob=cfg.jpeg_prob,
         jpeg_quality_range=(cfg.jpeg_quality_min, cfg.jpeg_quality_max),
         multi_scale_range=(cfg.train_multi_scale_min, cfg.train_multi_scale_max),
-        random_crop_size=(cfg.crop_w, cfg.crop_h),
+        random_crop_size=None,
         auto_contrast=cfg.auto_contrast,
         auto_contrast_cutoff=cfg.auto_contrast_cutoff,
         ignore_filename_prefixes=(("0001TP_",) if cfg.ignore_0001tp_prefix else ()),
