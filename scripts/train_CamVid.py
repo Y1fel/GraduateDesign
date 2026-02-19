@@ -71,6 +71,8 @@ class TrainConfig:
     auto_contrast: bool = True
     auto_contrast_cutoff: float = 1.0
 
+    ignore_0001tp_prefix: bool = False
+
     ce_variant: str = "ce"  # ce | focal | ohem
     use_class_balanced_ce: bool = False
     loss_preset: str = "baseline"  # baseline | cbce | focal | ohem
@@ -95,6 +97,11 @@ def parse_args() -> argparse.Namespace:
         default=None,
         choices=["baseline", "cbce", "focal", "ohem"],
         help="Loss preset: baseline(plain CE), cbce(class-balanced CE), focal, or ohem.",
+    )
+    parser.add_argument(
+        "--ignore_0001tp_prefix",
+        action="store_true",
+        help="Ignore image files whose names start with '0001TP_' (very dark captures).",
     )
     return parser.parse_args()
 
@@ -280,6 +287,8 @@ def main() -> None:
     args = parse_args()
     cfg = TrainConfig()
     apply_loss_preset(cfg, args.loss_preset or cfg.loss_preset)
+    if args.ignore_0001tp_prefix:
+        cfg.ignore_0001tp_prefix = True
     set_seed(cfg.seed)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -382,6 +391,7 @@ def main() -> None:
         random_crop_size=(cfg.crop_w, cfg.crop_h),
         auto_contrast=cfg.auto_contrast,
         auto_contrast_cutoff=cfg.auto_contrast_cutoff,
+        ignore_filename_prefixes=(("0001TP_",) if cfg.ignore_0001tp_prefix else ()),
     )
     val_ds = CamVidFolderDataset(
         root=cfg.data_root,
@@ -395,6 +405,7 @@ def main() -> None:
         label_lut=label_lut,
         auto_contrast=cfg.auto_contrast,
         auto_contrast_cutoff=cfg.auto_contrast_cutoff,
+        ignore_filename_prefixes=(("0001TP_",) if cfg.ignore_0001tp_prefix else ()),
     )
 
     train_loader = DataLoader(
