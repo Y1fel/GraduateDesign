@@ -13,6 +13,7 @@ from src.datasets.transforms import (
     pil_to_tensor,
     normalize_img,
     photometric_augment,
+    low_light_preprocess,
 )
 from src.utils.Id2Mask import color_mask_to_id
 
@@ -46,6 +47,9 @@ class CamVidFolderDataset(Dataset):
         auto_contrast: bool = False,
         auto_contrast_cutoff: float = 1.0,
         ignore_filename_prefixes: Optional[Sequence[str]] = None,
+        low_light_preprocess_enable: bool = False,
+        low_light_gamma: float = 1.0,
+        low_light_brightness_gain: float = 1.0,
     ) -> None:
         assert split in ("train", "val", "test"), f"split must be train/val/test, got {split}"
 
@@ -74,6 +78,9 @@ class CamVidFolderDataset(Dataset):
         self.auto_contrast = bool(auto_contrast)
         self.auto_contrast_cutoff = float(auto_contrast_cutoff)
         self.ignore_filename_prefixes = tuple(ignore_filename_prefixes or ())
+        self.low_light_preprocess_enable = bool(low_light_preprocess_enable)
+        self.low_light_gamma = float(low_light_gamma)
+        self.low_light_brightness_gain = float(low_light_brightness_gain)
 
         if label_lut is not None:
             lut = np.asarray(label_lut)
@@ -157,6 +164,13 @@ class CamVidFolderDataset(Dataset):
             if self.multi_scale_range != (1.0, 1.0):
                 img, mask_rgb = random_scale_pair(img, mask_rgb, self.multi_scale_range)
             img, mask_rgb = maybe_hflip_pair(img, mask_rgb, self.hflip_prob)
+
+        if self.low_light_preprocess_enable:
+            img = low_light_preprocess(
+                img,
+                gamma=self.low_light_gamma,
+                brightness_gain=self.low_light_brightness_gain,
+            )
 
         if self.auto_contrast:
             img = ImageOps.autocontrast(img, cutoff=self.auto_contrast_cutoff)
