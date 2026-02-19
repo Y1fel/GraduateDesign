@@ -68,6 +68,9 @@ class TrainConfig:
     jpeg_quality_max: int = 98
     photo_aug_warmup_epochs: int = 20
 
+    auto_contrast: bool = True
+    auto_contrast_cutoff: float = 1.0
+
     ce_variant: str = "ce"  # ce | focal | ohem
     use_class_balanced_ce: bool = False
     loss_preset: str = "baseline"  # baseline | cbce | focal | ohem
@@ -377,6 +380,8 @@ def main() -> None:
         jpeg_quality_range=(cfg.jpeg_quality_min, cfg.jpeg_quality_max),
         multi_scale_range=(cfg.train_multi_scale_min, cfg.train_multi_scale_max),
         random_crop_size=(cfg.crop_w, cfg.crop_h),
+        auto_contrast=cfg.auto_contrast,
+        auto_contrast_cutoff=cfg.auto_contrast_cutoff,
     )
     val_ds = CamVidFolderDataset(
         root=cfg.data_root,
@@ -388,6 +393,8 @@ def main() -> None:
         ignore_index=cfg.ignore_index,
         training=False,
         label_lut=label_lut,
+        auto_contrast=cfg.auto_contrast,
+        auto_contrast_cutoff=cfg.auto_contrast_cutoff,
     )
 
     train_loader = DataLoader(
