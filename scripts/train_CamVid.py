@@ -70,6 +70,9 @@ class TrainConfig:
 
     auto_contrast: bool = True
     auto_contrast_cutoff: float = 1.0
+    low_light_preprocess_enable: bool = True
+    low_light_gamma: float = 0.85
+    low_light_brightness_gain: float = 1.10
 
     ignore_0001tp_prefix: bool = False
 
@@ -212,9 +215,9 @@ def train_one_epoch(
     total_iters: int,
     base_lr: float,
     power: float = 0.9,
-) -> float:
+) -> dict[str, float]:
     model.train()
-    total_loss, n = 0.0, 0
+    total_loss, total_ce, total_dice, n = 0.0, 0.0, 0.0, 0
 
     use_amp = (device.type == "cuda") and (scaler is not None)
 
@@ -232,21 +235,64 @@ def train_one_epoch(
         if use_amp:
             with autocast(device_type="cuda", dtype=torch.float16):
                 logits = model(imgs)
-                loss = criterion(logits, masks)
+                loss_parts = criterion.forward_components(logits, masks)
+                loss = loss_parts["total"]
             scaler.scale(loss).backward()
             scaler.step(optimizer)
             scaler.update()
         else:
             logits = model(imgs)
-            loss = criterion(logits, masks)
+            loss_parts = criterion.forward_components(logits, masks)
+            loss = loss_parts["total"]
             loss.backward()
             optimizer.step()
 
         bs = imgs.size(0)
         total_loss += loss.item() * bs
+        total_ce += loss_parts["ce"].item() * bs
+        total_dice += loss_parts["dice"].item() * bs
         n += bs
 
-    return total_loss / max(n, 1)
+    denom = max(n, 1)
+    return {
+        "total": total_loss / denom,
+        "ce": total_ce / denom,
+        "dice": total_dice / denom,
+    }
+
+
+@torch.inference_mode()
+def evaluate_loss(model, loader, criterion, device, use_amp: bool = True) -> dict[str, float]:
+    model.eval()
+    total_loss = 0.0
+    total_ce = 0.0
+    total_dice = 0.0
+    n = 0
+
+    for imgs, masks, _names in loader:
+        imgs = imgs.to(device, non_blocking=True)
+        masks = masks.to(device, non_blocking=True)
+
+        if use_amp and device.type == "cuda":
+            with autocast(device_type="cuda", dtype=torch.float16):
+                logits = model(imgs)
+                loss_parts = criterion.forward_components(logits, masks)
+        else:
+            logits = model(imgs)
+            loss_parts = criterion.forward_components(logits, masks)
+
+        bs = imgs.size(0)
+        total_loss += loss_parts["total"].item() * bs
+        total_ce += loss_parts["ce"].item() * bs
+        total_dice += loss_parts["dice"].item() * bs
+        n += bs
+
+    denom = max(n, 1)
+    return {
+        "total": total_loss / denom,
+        "ce": total_ce / denom,
+        "dice": total_dice / denom,
+    }
 
 
 @torch.inference_mode()
@@ -326,6 +372,11 @@ def main() -> None:
     out.save_config(cfg)
     out.init_metrics()
     print(f"[INFO] run_dir = {out.run_dir}")
+    print(
+        "[PREPROCESS] low_light="
+        f"{cfg.low_light_preprocess_enable} gamma={cfg.low_light_gamma:.2f} "
+        f"brightness_gain={cfg.low_light_brightness_gain:.2f} auto_contrast={cfg.auto_contrast}"
+    )
 
     class_names_11 = [
         "Sky", "Building", "Pole", "Road", "Pavement", "Tree", "SignSymbol", "Fence", "Car", "Pedestrian", "Bicyclist"
@@ -392,6 +443,9 @@ def main() -> None:
         auto_contrast=cfg.auto_contrast,
         auto_contrast_cutoff=cfg.auto_contrast_cutoff,
         ignore_filename_prefixes=(("0001TP_",) if cfg.ignore_0001tp_prefix else ()),
+        low_light_preprocess_enable=cfg.low_light_preprocess_enable,
+        low_light_gamma=cfg.low_light_gamma,
+        low_light_brightness_gain=cfg.low_light_brightness_gain,
     )
     val_ds = CamVidFolderDataset(
         root=cfg.data_root,
@@ -406,6 +460,9 @@ def main() -> None:
         auto_contrast=cfg.auto_contrast,
         auto_contrast_cutoff=cfg.auto_contrast_cutoff,
         ignore_filename_prefixes=(("0001TP_",) if cfg.ignore_0001tp_prefix else ()),
+        low_light_preprocess_enable=cfg.low_light_preprocess_enable,
+        low_light_gamma=cfg.low_light_gamma,
+        low_light_brightness_gain=cfg.low_light_brightness_gain,
     )
 
     train_loader = DataLoader(
@@ -458,6 +515,7 @@ def main() -> None:
     )
 
     best_miou = -1.0
+    best_val_loss = float("inf")
 
     for epoch in range(1, cfg.epochs + 1):
         total_iters = cfg.epochs * len(train_loader)
@@ -471,7 +529,7 @@ def main() -> None:
             train_ds.set_photo_aug_scale(aug_scale)
             print(f"[AUG] photo_aug_prob={train_ds.photo_aug_prob_current:.3f} (scale={aug_scale:.2f})")
 
-        train_loss = train_one_epoch(
+        train_loss_parts = train_one_epoch(
             model,
             train_loader,
             optimizer,
@@ -482,12 +540,18 @@ def main() -> None:
             total_iters=total_iters,
             base_lr=cfg.lr_0,
         )
+        val_loss_parts = evaluate_loss(model, val_loader, criterion, device, use_amp=(device.type == "cuda"))
+        train_loss = train_loss_parts["total"]
+        val_loss = val_loss_parts["total"]
         val_metrics = compute_segmentation_metrics(model, val_loader, device, cfg.num_classes, cfg.ignore_index)
         val_miou = float(val_metrics["miou"])
 
         dt = time.time() - t0
         print(
-            f"[EPOCH {epoch:03d}/{cfg.epochs}] loss={train_loss:.4f}  val_mIoU={val_miou:.4f} "
+            f"[EPOCH {epoch:03d}/{cfg.epochs}] train_loss={train_loss:.4f} (closer to 0 is better) "
+            f"[ce={train_loss_parts['ce']:.4f}, dice={train_loss_parts['dice']:.4f}] "
+            f" val_loss={val_loss:.4f} [ce={val_loss_parts['ce']:.4f}, dice={val_loss_parts['dice']:.4f}] "
+            f" val_mIoU={val_miou:.4f} "
             f" val_BF1={val_metrics['boundary_fscore']:.4f} val_TrimapIoU={val_metrics['trimap_iou']:.4f}  time={dt:.1f}s"
         )
         small_indices = [2, 9, 10]  # Pole, Pedestrian(Person+Rider), Bicyclist
@@ -499,23 +563,28 @@ def main() -> None:
             peak = torch.cuda.max_memory_allocated() / 1024**3
             print(f"[MEM] peak_allocated = {peak:.2f} GB")
 
-        out.append_metrics(epoch, train_loss, val_miou, dt)
+        out.append_metrics(epoch, train_loss, val_loss, val_miou, dt)
 
         ckpt = {
             "epoch": epoch,
             "model_state": model.state_dict(),
             "optimizer_state": optimizer.state_dict(),
             "best_miou": best_miou,
+            "best_val_loss": best_val_loss,
         }
 
         if epoch % 10 == 0:
             torch.save(ckpt, out.ckpt_dir / f"epoch_{epoch:03d}.pth")
 
+        if (not math.isnan(val_loss)) and (val_loss < best_val_loss):
+            best_val_loss = val_loss
+
         if (not math.isnan(val_miou)) and (val_miou > best_miou):
             best_miou = val_miou
             ckpt["best_miou"] = best_miou
+            ckpt["best_val_loss"] = best_val_loss
             torch.save(ckpt, out.ckpt_dir / "best.pth")
-            print(f"[INFO] New best mIoU = {best_miou:.4f} -> saved best.pth")
+            print(f"[INFO] New best mIoU = {best_miou:.4f} -> saved best.pth (current val_loss={val_loss:.4f})")
 
         if epoch % cfg.save_vis_every == 0:
             print(f"[INFO] Saving visualizations (best.pth) at epoch {epoch} ...")
