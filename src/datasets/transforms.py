@@ -28,6 +28,22 @@ def _clamp_unit(v: float) -> float:
     return max(0.0, min(1.0, float(v)))
 
 
+def low_light_preprocess(
+    img: Image.Image,
+    *,
+    gamma: float = 1.0,
+    brightness_gain: float = 1.0,
+) -> Image.Image:
+    gamma = max(1e-3, float(gamma))
+    brightness_gain = max(1e-3, float(brightness_gain))
+
+    arr = np.asarray(img, dtype=np.float32) / 255.0
+    arr = np.power(np.clip(arr, 0.0, 1.0), gamma)
+    arr = np.clip(arr * brightness_gain, 0.0, 1.0)
+    arr = (arr * 255.0).round().astype(np.uint8)
+    return Image.fromarray(arr, mode="RGB")
+
+
 def photometric_augment(
     img: Image.Image,
     *,
