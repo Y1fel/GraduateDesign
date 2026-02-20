@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Dict, Tuple, Optional, Sequence
+from typing import Dict, Tuple, Optional
 
 import numpy as np
 import torch
@@ -46,7 +46,6 @@ class CamVidFolderDataset(Dataset):
         random_crop_size: Optional[Tuple[int, int]] = None,
         auto_contrast: bool = False,
         auto_contrast_cutoff: float = 1.0,
-        ignore_filename_prefixes: Optional[Sequence[str]] = None,
         low_light_preprocess_enable: bool = False,
         low_light_gamma: float = 1.0,
         low_light_brightness_gain: float = 1.0,
@@ -77,10 +76,16 @@ class CamVidFolderDataset(Dataset):
         self.random_crop_size = random_crop_size
         self.auto_contrast = bool(auto_contrast)
         self.auto_contrast_cutoff = float(auto_contrast_cutoff)
-        self.ignore_filename_prefixes = tuple(ignore_filename_prefixes or ())
         self.low_light_preprocess_enable = bool(low_light_preprocess_enable)
         self.low_light_gamma = float(low_light_gamma)
         self.low_light_brightness_gain = float(low_light_brightness_gain)
+
+        self._aug_stats = {
+            "samples_seen": 0,
+            "photometric_applied": 0,
+            "blur_applied": 0,
+            "jpeg_applied": 0,
+        }
 
         if label_lut is not None:
             lut = np.asarray(label_lut)
@@ -113,16 +118,6 @@ class CamVidFolderDataset(Dataset):
         exts = {".png", ".jpg", ".jpeg", ".bmp"}
         self.img_paths = sorted([p for p in self.images_dir.iterdir() if p.suffix.lower() in exts])
 
-        if self.ignore_filename_prefixes:
-            before = len(self.img_paths)
-            self.img_paths = [
-                p for p in self.img_paths
-                if not any(p.name.startswith(prefix) for prefix in self.ignore_filename_prefixes)
-            ]
-            ignored = before - len(self.img_paths)
-            if ignored > 0:
-                print(f"[DATA] split={self.split}: ignored {ignored} files by prefix filter {self.ignore_filename_prefixes}")
-
         if not self.img_paths:
             raise RuntimeError(f"No images found in {self.images_dir}")
 
@@ -151,6 +146,15 @@ class CamVidFolderDataset(Dataset):
         s = max(0.0, min(1.0, float(scale)))
         self.photo_aug_prob_current = self.photo_aug_prob * s
 
+    def reset_aug_stats(self) -> None:
+        for key in self._aug_stats:
+            self._aug_stats[key] = 0
+
+    def consume_aug_stats(self) -> dict[str, int]:
+        out = {k: int(v) for k, v in self._aug_stats.items()}
+        self.reset_aug_stats()
+        return out
+
     def __getitem__(self, idx: int):
         img_path = self.img_paths[idx]
         mask_path = self._resolve_mask(img_path)
@@ -176,7 +180,7 @@ class CamVidFolderDataset(Dataset):
             img = ImageOps.autocontrast(img, cutoff=self.auto_contrast_cutoff)
 
         if self.training:
-            img = photometric_augment(
+            img, aug_stats = photometric_augment(
                 img,
                 prob=self.photo_aug_prob_current,
                 brightness=self.brightness_jitter,
@@ -188,7 +192,15 @@ class CamVidFolderDataset(Dataset):
                 blur_radius_range=self.blur_radius_range,
                 jpeg_prob=self.jpeg_prob,
                 jpeg_quality_range=self.jpeg_quality_range,
+                return_stats=True,
             )
+            self._aug_stats["samples_seen"] += 1
+            if aug_stats["photometric_applied"]:
+                self._aug_stats["photometric_applied"] += 1
+            if aug_stats["blur_applied"]:
+                self._aug_stats["blur_applied"] += 1
+            if aug_stats["jpeg_applied"]:
+                self._aug_stats["jpeg_applied"] += 1
 
         mask_old = color_mask_to_id(mask_rgb, self.color2id, self.ignore_index)
 

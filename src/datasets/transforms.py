@@ -1,5 +1,5 @@
 import random
-from typing import Tuple
+from typing import Any, Tuple
 
 import numpy as np
 import torch
@@ -57,10 +57,13 @@ def photometric_augment(
     blur_radius_range: Tuple[float, float] = (0.0, 0.0),
     jpeg_prob: float = 0.0,
     jpeg_quality_range: Tuple[int, int] = (95, 100),
-) -> Image.Image:
+    return_stats: bool = False,
+) -> Image.Image | tuple[Image.Image, dict[str, Any]]:
+    stats = {"photometric_applied": False, "blur_applied": False, "jpeg_applied": False}
     if random.random() >= _clamp_unit(prob):
-        return img
+        return (img, stats) if return_stats else img
 
+    stats["photometric_applied"] = True
     out = img
     op_prob = _clamp_unit(op_prob)
 
@@ -85,6 +88,7 @@ def photometric_augment(
         radius = random.uniform(lo_b, hi_b)
         if radius > 0:
             out = out.filter(ImageFilter.GaussianBlur(radius=radius))
+            stats["blur_applied"] = True
 
     jpeg_prob = _clamp_unit(jpeg_prob)
     if jpeg_prob > 0 and random.random() < jpeg_prob:
@@ -98,6 +102,7 @@ def photometric_augment(
         out.save(buf, format="JPEG", quality=random.randint(lo_q, hi_q))
         buf.seek(0)
         out = Image.open(buf).convert("RGB")
+        stats["jpeg_applied"] = True
 
     g0, g1 = float(gamma_range[0]), float(gamma_range[1])
     lo, hi = (g0, g1) if g0 <= g1 else (g1, g0)
@@ -110,7 +115,8 @@ def photometric_augment(
     else:
         arr = np.asarray(out, dtype=np.float32) / 255.0
     arr = (arr * 255.0).round().astype(np.uint8)
-    return Image.fromarray(arr, mode="RGB")
+    out_img = Image.fromarray(arr, mode="RGB")
+    return (out_img, stats) if return_stats else out_img
 
 
 
