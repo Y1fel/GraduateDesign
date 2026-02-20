@@ -110,6 +110,7 @@ class TrainConfig:
 
     outputs_root: Path = PROJECT_ROOT / "outputs"
     seed: int = 42
+    use_amp: bool = True
 
 
 
@@ -359,6 +360,7 @@ def train_one_epoch(
     epoch: int,
     total_iters: int,
     base_lr: float,
+    use_amp: bool,
     power: float = 0.9,
 ) -> dict[str, float]:
     """执行单个 epoch 的训练。
@@ -374,6 +376,7 @@ def train_one_epoch(
     """
     model.train()
     total_loss, total_ce, total_dice, n = 0.0, 0.0, 0.0, 0
+    scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
 
     for it, (imgs, masks, _names) in enumerate(loader):
         global_step = (epoch - 1) * len(loader) + it
@@ -386,11 +389,14 @@ def train_one_epoch(
 
         optimizer.zero_grad(set_to_none=True)
 
-        logits = model(imgs)
-        loss_parts = criterion.forward_components(logits, masks)
-        loss = loss_parts["total"]
-        loss.backward()
-        optimizer.step()
+        with torch.cuda.amp.autocast(enabled=use_amp):
+            logits = model(imgs)
+            loss_parts = criterion.forward_components(logits, masks)
+            loss = loss_parts["total"]
+
+        scaler.scale(loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
 
         bs = imgs.size(0)
         total_loss += loss.item() * bs
@@ -407,7 +413,7 @@ def train_one_epoch(
 
 
 @torch.inference_mode()
-def evaluate_loss(model, loader, criterion, device) -> dict[str, float]:
+def evaluate_loss(model, loader, criterion, device, use_amp: bool) -> dict[str, float]:
     """在验证集上计算平均损失（不更新梯度）。"""
     model.eval()
     total_loss = 0.0
@@ -419,8 +425,9 @@ def evaluate_loss(model, loader, criterion, device) -> dict[str, float]:
         imgs = imgs.to(device, non_blocking=True)
         masks = masks.to(device, non_blocking=True)
 
-        logits = model(imgs)
-        loss_parts = criterion.forward_components(logits, masks)
+        with torch.cuda.amp.autocast(enabled=use_amp):
+            logits = model(imgs)
+            loss_parts = criterion.forward_components(logits, masks)
 
         bs = imgs.size(0)
         total_loss += loss_parts["total"].item() * bs
@@ -495,6 +502,8 @@ def main() -> None:
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[INFO] device = {device}")
+    amp_enabled = bool(cfg.use_amp and device.type == "cuda")
+    print(f"[INFO] AMP enabled = {amp_enabled}")
 
     # 32类颜色表/映射用于 RGB->old_id 解码与可视化
     csv_path = cfg.data_root / "class_dict.csv"
@@ -734,8 +743,9 @@ def main() -> None:
             epoch=epoch,
             total_iters=total_iters,
             base_lr=cfg.lr_0,
+            use_amp=amp_enabled,
         )
-        val_loss_parts = evaluate_loss(model, val_loader, criterion, device)
+        val_loss_parts = evaluate_loss(model, val_loader, criterion, device, use_amp=amp_enabled)
         train_loss = train_loss_parts["total"]
         val_loss = val_loss_parts["total"]
         val_metrics = compute_segmentation_metrics(model, val_loader, device, cfg.num_classes, cfg.ignore_index)
