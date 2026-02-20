@@ -17,20 +17,19 @@ class ConvNormReLU(nn.Sequential):
         p: int = 0,
         d: int = 1,
         norm: NormType = "bn",
-        num_groups: int = 32,
     ):
         super().__init__(
             nn.Conv2d(in_ch, out_ch, kernel_size=k, stride=s, padding=p, dilation=d, bias=False),
-            make_norm(norm, out_ch, num_groups=num_groups),
+            make_norm(norm, out_ch),
             nn.ReLU(inplace=True),
         )
 
 
 class LearnableUpsampleBlock(nn.Module):
-    def __init__(self, channels: int, norm: NormType = "bn", num_groups: int = 32):
+    def __init__(self, channels: int, norm: NormType = "bn"):
         super().__init__()
-        self.pre = ConvNormReLU(channels, channels, k=1, norm=norm, num_groups=num_groups)
-        self.post = ConvNormReLU(channels, channels, k=3, p=1, norm=norm, num_groups=num_groups)
+        self.pre = ConvNormReLU(channels, channels, k=1, norm=norm)
+        self.post = ConvNormReLU(channels, channels, k=3, p=1, norm=norm)
 
     def forward(self, x: torch.Tensor, out_size: tuple[int, int]) -> torch.Tensor:
         x = self.pre(x)
@@ -47,45 +46,24 @@ class DeepLabV3PlusDecoder(nn.Module):
         decoder_channels: int = 256,
         dropout: float = 0.1,
         norm: NormType = "bn",
-        num_groups: int = 32,
-        use_mid_level_fusion: bool = True,
-        mid_level_in_channels: int = 512,
-        mid_level_out_channels: int = 64,
     ):
         super().__init__()
-        self.use_mid_level_fusion = bool(use_mid_level_fusion)
         self.low_reduce = ConvNormReLU(
-            low_level_in_channels, low_level_out_channels, k=1, norm=norm, num_groups=num_groups
+            low_level_in_channels, low_level_out_channels, k=1, norm=norm
         )
-        self.aspp_upsample = LearnableUpsampleBlock(aspp_out_channels, norm=norm, num_groups=num_groups)
+        self.aspp_upsample = LearnableUpsampleBlock(aspp_out_channels, norm=norm)
 
-        if self.use_mid_level_fusion:
-            self.mid_reduce = ConvNormReLU(
-                mid_level_in_channels, mid_level_out_channels, k=1, norm=norm, num_groups=num_groups
-            )
-            self.mid_upsample = LearnableUpsampleBlock(mid_level_out_channels, norm=norm, num_groups=num_groups)
-            in_ch = aspp_out_channels + low_level_out_channels + mid_level_out_channels
-        else:
-            in_ch = aspp_out_channels + low_level_out_channels
-
+        in_ch = aspp_out_channels + low_level_out_channels
         self.refine = nn.Sequential(
-            ConvNormReLU(in_ch, decoder_channels, k=3, p=1, norm=norm, num_groups=num_groups),
-            ConvNormReLU(decoder_channels, decoder_channels, k=3, p=1, norm=norm, num_groups=num_groups),
+            ConvNormReLU(in_ch, decoder_channels, k=3, p=1, norm=norm),
+            ConvNormReLU(decoder_channels, decoder_channels, k=3, p=1, norm=norm),
             nn.Dropout(p=dropout),
         )
 
-    def forward(self, low_level: torch.Tensor, aspp_feat: torch.Tensor, mid_level: torch.Tensor | None = None):
+    def forward(self, low_level: torch.Tensor, aspp_feat: torch.Tensor):
         low = self.low_reduce(low_level)
         out_size = low.shape[-2:]
         aspp_up = self.aspp_upsample(aspp_feat, out_size)
 
-        feats = [aspp_up, low]
-        if self.use_mid_level_fusion:
-            if mid_level is None:
-                raise ValueError("mid_level is required when use_mid_level_fusion=True")
-            mid = self.mid_reduce(mid_level)
-            mid = self.mid_upsample(mid, out_size)
-            feats.append(mid)
-
-        x = torch.cat(feats, dim=1)
+        x = torch.cat([aspp_up, low], dim=1)
         return self.refine(x)

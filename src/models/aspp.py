@@ -17,11 +17,10 @@ class Conv(nn.Sequential):
         p: int = 0,
         d: int = 1,
         norm: NormType = "bn",
-        num_groups: int = 32,
     ):
         super().__init__(
             nn.Conv2d(in_ch, out_ch, kernel_size=k, stride=s, padding=p, dilation=d, bias=False),
-            make_norm(norm, out_ch, num_groups=num_groups),
+            make_norm(norm, out_ch),
             nn.ReLU(inplace=True),
         )
 
@@ -34,24 +33,23 @@ class ASPP(nn.Module):
         atrous_rates=(6, 12, 18),
         dropout: float = 0.1,
         norm: NormType = "bn",
-        num_groups: int = 32,
     ):
         super().__init__()
         r1, r2, r3 = atrous_rates
 
-        self.conv = Conv(in_channels, out_channels, k=1, norm=norm, num_groups=num_groups)
+        self.conv = Conv(in_channels, out_channels, k=1, norm=norm)
 
-        self.conv_1 = Conv(in_channels, out_channels, k=3, p=r1, d=r1, norm=norm, num_groups=num_groups)
-        self.conv_2 = Conv(in_channels, out_channels, k=3, p=r2, d=r2, norm=norm, num_groups=num_groups)
-        self.conv_3 = Conv(in_channels, out_channels, k=3, p=r3, d=r3, norm=norm, num_groups=num_groups)
+        self.conv_1 = Conv(in_channels, out_channels, k=3, p=r1, d=r1, norm=norm)
+        self.conv_2 = Conv(in_channels, out_channels, k=3, p=r2, d=r2, norm=norm)
+        self.conv_3 = Conv(in_channels, out_channels, k=3, p=r3, d=r3, norm=norm)
 
         self.global_pool = nn.Sequential(
             nn.AdaptiveAvgPool2d(1),
-            Conv(in_channels, out_channels, k=1, norm=norm, num_groups=num_groups),
+            Conv(in_channels, out_channels, k=1, norm=norm),
         )
 
         self.project = nn.Sequential(
-            Conv(out_channels * 5, out_channels, k=1, norm=norm, num_groups=num_groups),
+            Conv(out_channels * 5, out_channels, k=1, norm=norm),
             nn.Dropout(p=dropout),
         )
 
