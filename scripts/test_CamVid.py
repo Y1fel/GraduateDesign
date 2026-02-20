@@ -34,7 +34,6 @@ class TestConfig:
     num_workers: int = 8
 
     save_triplet_max: int = 100
-    use_amp: bool = False
 
 
 def resolve_ckpt_path(ckpt: Path) -> Path:
@@ -96,24 +95,17 @@ def save_all_predictions(
     out_dir: Path,
     id2color,
     ignore_index: int,
-    use_amp: bool,
 ) -> None:
     pred_color_dir = out_dir / "pred_color"
     pred_id_dir = out_dir / "pred_id"
     pred_color_dir.mkdir(parents=True, exist_ok=True)
     pred_id_dir.mkdir(parents=True, exist_ok=True)
 
-    autocast_ctx = (
-        torch.cuda.amp.autocast(enabled=True) if (use_amp and device.type == "cuda")
-        else torch.cuda.amp.autocast(enabled=False)
-    )
-
     for imgs, _masks, names in loader:
         imgs = imgs.to(device, non_blocking=True)
 
-        with autocast_ctx:
-            logits = model(imgs)
-            pred = torch.argmax(logits, dim=1)  # (N,H,W)
+        logits = model(imgs)
+        pred = torch.argmax(logits, dim=1)  # (N,H,W)
 
         pred_np = pred.detach().cpu().numpy().astype(np.uint8)
 
@@ -167,7 +159,6 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--output_stride", type=int, default=8, choices=[8, 16])
     p.add_argument("--head_norm", type=str, default="bn", choices=["bn", "gn"])
 
-    p.add_argument("--amp", action="store_true")
     return p.parse_args()
 
 
@@ -193,7 +184,6 @@ def main() -> None:
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         save_triplet_max=args.save_triplet_max,
-        use_amp=args.amp,
     )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -246,7 +236,6 @@ def main() -> None:
         out_dir=cfg.out_dir,
         id2color=id2color_11,  # ✅ 11类颜色
         ignore_index=cfg.ignore_index,
-        use_amp=cfg.use_amp,
     )
 
     print("[DONE] Test inference finished.")

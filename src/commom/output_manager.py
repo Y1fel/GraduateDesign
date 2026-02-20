@@ -32,9 +32,9 @@ class OutputManager:
             return
         with self.metrics_csv.open("w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
-            w.writerow(["epoch", "train_loss", "val_miou", "time_sec"])
+            w.writerow(["epoch", "train_loss", "val_loss", "val_miou", "time_sec"])
 
-    def append_metrics(self, epoch: int, train_loss: float, val_miou: float, dt: float) -> None:
+    def append_metrics(self, epoch: int, train_loss: float, val_loss: float, val_miou: float, dt: float) -> None:
         with self.metrics_csv.open("a", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
-            w.writerow([epoch, f"{train_loss:.6f}", f"{val_miou:.6f}", f"{dt:.2f}"])
+            w.writerow([epoch, f"{train_loss:.6f}", f"{val_loss:.6f}", f"{val_miou:.6f}", f"{dt:.2f}"])

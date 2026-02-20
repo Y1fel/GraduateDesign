@@ -135,7 +135,7 @@ class CrossEntropyDiceLoss(nn.Module):
         normalizer = (pixel_weight * valid.float()).sum().clamp_min(1.0)
         return weighted_loss / normalizer
 
-    def forward(self, logits: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    def forward_components(self, logits: torch.Tensor, target: torch.Tensor) -> dict[str, torch.Tensor]:
         target = target.long()
         if self.ce_variant == "ce":
             ce = self._boundary_weighted_ce(logits, target)
@@ -145,5 +145,10 @@ class CrossEntropyDiceLoss(nn.Module):
             ce = self.ohem(logits, target, class_weight=self.class_weights)
         else:
             raise ValueError(f"Unknown ce_variant: {self.ce_variant}")
+
         dice = self.dice(logits, target)
-        return self.ce_weight * ce + self.dice_weight * dice
+        total = self.ce_weight * ce + self.dice_weight * dice
+        return {"total": total, "ce": ce, "dice": dice}
+
+    def forward(self, logits: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        return self.forward_components(logits, target)["total"]
