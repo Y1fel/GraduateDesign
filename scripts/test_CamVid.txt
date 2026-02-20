@@ -3,5 +3,5 @@ python scripts/test_camvid.py --data_root D:\MachineLearning\GraduateDesign\data
 
 python -m scripts.test_CamVid --data_root D:\MachineLearning\GraduateDesign\data\archive\CamVid --ckpt D:\MachineLearning\GraduateDesign\outputs\camvid_deeplabv3plus_20260217_201033
 
-python scripts/test_camvid.py --data_root D:\...\CamVid --ckpt D:\...\best.pth --amp
+python scripts/test_camvid.py --data_root D:\...\CamVid --ckpt D:\...\best.pth
 

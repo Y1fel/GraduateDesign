@@ -73,7 +73,10 @@ class TrainConfig:
     low_light_gamma: float = 0.85
     low_light_brightness_gain: float = 1.10
 
-    ignore_0001tp_prefix: bool = False
+    avoid_overstrong_tone_ops: bool = True
+    photo_aug_prob_cap_when_tone_stack: float = 0.20
+    photo_op_prob_cap_when_tone_stack: float = 0.35
+    jitter_scale_when_tone_stack: float = 0.7
 
     ce_variant: str = "ce"  # ce | focal | ohem
     use_class_balanced_ce: bool = False
@@ -83,6 +86,12 @@ class TrainConfig:
     ohem_min_kept: int = 100000
     ohem_thresh: float = 0.7
     boundary_weight: float = 1.5
+    boundary_weight_warmup_epochs: int = 0
+
+    disable_blur_jpeg_when_boundary_weight_high: bool = True
+    boundary_weight_threshold: float = 1.0
+    reduced_blur_prob_when_boundary_high: float = 0.0
+    reduced_jpeg_prob_when_boundary_high: float = 0.0
 
     save_vis_every: int = 50
     save_vis_max_items: int = 8
@@ -100,12 +109,67 @@ def parse_args() -> argparse.Namespace:
         choices=["baseline", "cbce", "focal", "ohem"],
         help="Loss preset: baseline(plain CE), cbce(class-balanced CE), focal, or ohem.",
     )
+    parser.add_argument("--boundary_weight", type=float, default=None, help="Override boundary_weight.")
     parser.add_argument(
-        "--ignore_0001tp_prefix",
-        action="store_true",
-        help="Ignore image files whose names start with '0001TP_' (very dark captures).",
+        "--ablation_variant",
+        type=str,
+        default=None,
+        choices=["A", "B", "C", "D05", "D10"],
+        help="A=baseline, B=disable blur/jpeg, C=disable mid-level fusion, D05/D10 set boundary_weight.",
     )
     return parser.parse_args()
+
+
+def apply_ablation_variant(cfg: TrainConfig, variant: str) -> None:
+    v = variant.upper()
+    if v == "A":
+        return
+    if v == "B":
+        cfg.blur_prob = 0.0
+        cfg.jpeg_prob = 0.0
+        return
+    if v == "C":
+        cfg.use_mid_level_fusion = False
+        return
+    if v == "D05":
+        cfg.boundary_weight = 0.5
+        return
+    if v == "D10":
+        cfg.boundary_weight = 1.0
+        return
+    raise ValueError(f"Unsupported ablation variant: {variant}")
+
+
+def resolve_boundary_weight_for_epoch(target_weight: float, epoch: int, warmup_epochs: int) -> float:
+    if warmup_epochs <= 0:
+        return float(target_weight)
+    progress = min(max(epoch, 0), warmup_epochs) / float(warmup_epochs)
+    return float(target_weight) * progress
+
+
+def resolve_effective_tone_aug(cfg: TrainConfig) -> dict[str, float]:
+    effective = {
+        "photo_aug_prob": float(cfg.photo_aug_prob),
+        "photo_op_prob": float(cfg.photo_op_prob),
+        "brightness_jitter": float(cfg.brightness_jitter),
+        "contrast_jitter": float(cfg.contrast_jitter),
+        "saturation_jitter": float(cfg.saturation_jitter),
+    }
+
+    if cfg.avoid_overstrong_tone_ops and cfg.low_light_preprocess_enable and cfg.auto_contrast:
+        scale = max(0.0, min(1.0, float(cfg.jitter_scale_when_tone_stack)))
+        effective["photo_aug_prob"] = min(effective["photo_aug_prob"], float(cfg.photo_aug_prob_cap_when_tone_stack))
+        effective["photo_op_prob"] = min(effective["photo_op_prob"], float(cfg.photo_op_prob_cap_when_tone_stack))
+        effective["brightness_jitter"] *= scale
+        effective["contrast_jitter"] *= scale
+        effective["saturation_jitter"] *= scale
+        print(
+            "[AUG-TONE] low_light + auto_contrast + photometric stack detected; "
+            f"scaled photo_aug_prob={effective['photo_aug_prob']:.3f}, "
+            f"photo_op_prob={effective['photo_op_prob']:.3f}, jitter_scale={scale:.2f}"
+        )
+
+    return effective
 
 
 def apply_loss_preset(cfg: TrainConfig, loss_preset: str) -> None:
@@ -315,8 +379,10 @@ def main() -> None:
     args = parse_args()
     cfg = TrainConfig()
     apply_loss_preset(cfg, args.loss_preset or cfg.loss_preset)
-    if args.ignore_0001tp_prefix:
-        cfg.ignore_0001tp_prefix = True
+    if args.boundary_weight is not None:
+        cfg.boundary_weight = float(args.boundary_weight)
+    if args.ablation_variant is not None:
+        apply_ablation_variant(cfg, args.ablation_variant)
     set_seed(cfg.seed)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -398,6 +464,23 @@ def main() -> None:
         f"ce_weight={cfg.ce_weight} | dice_weight={cfg.dice_weight} | boundary_weight={cfg.boundary_weight}"
     )
 
+    effective_blur_prob = cfg.blur_prob
+    effective_jpeg_prob = cfg.jpeg_prob
+    if (
+        cfg.disable_blur_jpeg_when_boundary_weight_high
+        and cfg.boundary_weight >= cfg.boundary_weight_threshold
+    ):
+        effective_blur_prob = cfg.reduced_blur_prob_when_boundary_high
+        effective_jpeg_prob = cfg.reduced_jpeg_prob_when_boundary_high
+
+    print(
+        "[AUG-LINK] "
+        f"boundary_weight={cfg.boundary_weight:.3f} threshold={cfg.boundary_weight_threshold:.3f} "
+        f"blur_prob={effective_blur_prob:.4f} jpeg_prob={effective_jpeg_prob:.4f}"
+    )
+
+    tone_aug = resolve_effective_tone_aug(cfg)
+
     # datasets
     train_ds = CamVidFolderDataset(
         root=cfg.data_root,
@@ -409,21 +492,20 @@ def main() -> None:
         ignore_index=cfg.ignore_index,
         training=True,
         label_lut=label_lut,
-        photo_aug_prob=cfg.photo_aug_prob,
-        brightness_jitter=cfg.brightness_jitter,
-        contrast_jitter=cfg.contrast_jitter,
-        saturation_jitter=cfg.saturation_jitter,
+        photo_aug_prob=tone_aug["photo_aug_prob"],
+        brightness_jitter=tone_aug["brightness_jitter"],
+        contrast_jitter=tone_aug["contrast_jitter"],
+        saturation_jitter=tone_aug["saturation_jitter"],
         gamma_range=(cfg.gamma_min, cfg.gamma_max),
-        photo_op_prob=cfg.photo_op_prob,
-        blur_prob=cfg.blur_prob,
+        photo_op_prob=tone_aug["photo_op_prob"],
+        blur_prob=effective_blur_prob,
         blur_radius_range=(cfg.blur_radius_min, cfg.blur_radius_max),
-        jpeg_prob=cfg.jpeg_prob,
+        jpeg_prob=effective_jpeg_prob,
         jpeg_quality_range=(cfg.jpeg_quality_min, cfg.jpeg_quality_max),
         multi_scale_range=(cfg.train_multi_scale_min, cfg.train_multi_scale_max),
         random_crop_size=None,
         auto_contrast=cfg.auto_contrast,
         auto_contrast_cutoff=cfg.auto_contrast_cutoff,
-        ignore_filename_prefixes=(("0001TP_",) if cfg.ignore_0001tp_prefix else ()),
         low_light_preprocess_enable=cfg.low_light_preprocess_enable,
         low_light_gamma=cfg.low_light_gamma,
         low_light_brightness_gain=cfg.low_light_brightness_gain,
@@ -440,7 +522,6 @@ def main() -> None:
         label_lut=label_lut,
         auto_contrast=cfg.auto_contrast,
         auto_contrast_cutoff=cfg.auto_contrast_cutoff,
-        ignore_filename_prefixes=(("0001TP_",) if cfg.ignore_0001tp_prefix else ()),
         low_light_preprocess_enable=cfg.low_light_preprocess_enable,
         low_light_gamma=cfg.low_light_gamma,
         low_light_brightness_gain=cfg.low_light_brightness_gain,
@@ -472,6 +553,13 @@ def main() -> None:
         use_mid_level_fusion=cfg.use_mid_level_fusion,
     ).to(device)
 
+    target_boundary_weight = float(cfg.boundary_weight)
+    init_boundary_weight = resolve_boundary_weight_for_epoch(
+        target_weight=target_boundary_weight,
+        epoch=1,
+        warmup_epochs=cfg.boundary_weight_warmup_epochs,
+    )
+
     criterion = CrossEntropyDiceLoss(
         num_classes=cfg.num_classes,
         ignore_index=cfg.ignore_index,
@@ -484,7 +572,7 @@ def main() -> None:
         focal_gamma=cfg.focal_gamma,
         ohem_min_kept=cfg.ohem_min_kept,
         ohem_thresh=cfg.ohem_thresh,
-        boundary_weight=cfg.boundary_weight,
+        boundary_weight=init_boundary_weight,
     ).to(device)
 
     optimizer = torch.optim.SGD(
@@ -502,13 +590,26 @@ def main() -> None:
         total_iters = cfg.epochs * len(train_loader)
         t0 = time.time()
 
+        current_boundary_weight = resolve_boundary_weight_for_epoch(
+            target_weight=target_boundary_weight,
+            epoch=epoch,
+            warmup_epochs=cfg.boundary_weight_warmup_epochs,
+        )
+        criterion.boundary_weight = current_boundary_weight
+
+        if hasattr(train_ds, "reset_aug_stats"):
+            train_ds.reset_aug_stats()
+
         if hasattr(train_ds, "set_photo_aug_scale"):
             if cfg.photo_aug_warmup_epochs > 0:
                 aug_scale = min(1.0, epoch / float(cfg.photo_aug_warmup_epochs))
             else:
                 aug_scale = 1.0
             train_ds.set_photo_aug_scale(aug_scale)
-            print(f"[AUG] photo_aug_prob={train_ds.photo_aug_prob_current:.3f} (scale={aug_scale:.2f})")
+            print(
+                f"[AUG] photo_aug_prob={train_ds.photo_aug_prob_current:.3f} (scale={aug_scale:.2f}) "
+                f"boundary_weight={current_boundary_weight:.3f}"
+            )
 
         train_loss_parts = train_one_epoch(
             model,
@@ -539,6 +640,13 @@ def main() -> None:
         print_small_object_metrics("Recall", val_metrics["recall_per_class"], class_names_11, small_indices)
         if cfg.use_class_balanced_ce:
             print_small_object_metrics("Precision", val_metrics["precision_per_class"], class_names_11, small_indices)
+        if hasattr(train_ds, "consume_aug_stats"):
+            aug_stats = train_ds.consume_aug_stats()
+            print(
+                "[AUG-STATS] "
+                f"photometric={aug_stats['photometric_applied']}/{aug_stats['samples_seen']} "
+                f"blur={aug_stats['blur_applied']} jpeg={aug_stats['jpeg_applied']}"
+            )
         if device.type == "cuda":
             peak = torch.cuda.max_memory_allocated() / 1024**3
             print(f"[MEM] peak_allocated = {peak:.2f} GB")
