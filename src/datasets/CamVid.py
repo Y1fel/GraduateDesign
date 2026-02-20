@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Dict, Tuple, Optional
+from typing import Dict, Tuple, Optional, Any
 
 import numpy as np
 import torch
@@ -20,6 +20,39 @@ from src.utils.Id2Mask import color_mask_to_id
 RGB = Tuple[int, int, int]
 
 
+def _build_default_train_preprocess() -> Dict[str, Any]:
+    return {
+        "auto_contrast": False,
+        "auto_contrast_cutoff": 1.0,
+        "low_light_preprocess_enable": False,
+        "low_light_gamma": 1.0,
+        "low_light_brightness_gain": 1.0,
+        "photo_aug_prob": 0.0,
+        "brightness_jitter": 0.0,
+        "contrast_jitter": 0.0,
+        "saturation_jitter": 0.0,
+        "gamma_range": (1.0, 1.0),
+        "photo_op_prob": 0.5,
+        "blur_prob": 0.0,
+        "blur_radius_range": (0.0, 0.0),
+        "jpeg_prob": 0.0,
+        "jpeg_quality_range": (95, 100),
+        "multi_scale_range": (1.0, 1.0),
+        "random_crop_size": None,
+        "hflip_prob": 0.0,
+    }
+
+
+def _build_default_eval_preprocess() -> Dict[str, Any]:
+    return {
+        "auto_contrast": False,
+        "auto_contrast_cutoff": 1.0,
+        "low_light_preprocess_enable": False,
+        "low_light_gamma": 1.0,
+        "low_light_brightness_gain": 1.0,
+    }
+
+
 class CamVidFolderDataset(Dataset):
     def __init__(
         self,
@@ -28,27 +61,11 @@ class CamVidFolderDataset(Dataset):
         color2id: Dict[RGB, int],
         resize_w: int,
         resize_h: int,
-        hflip_prob: float,
         ignore_index: int,
         training: bool,
         label_lut: Optional[np.ndarray] = None,  # shape (256,), old_id -> new_id or ignore
-        photo_aug_prob: float = 0.0,
-        brightness_jitter: float = 0.0,
-        contrast_jitter: float = 0.0,
-        saturation_jitter: float = 0.0,
-        gamma_range: Tuple[float, float] = (1.0, 1.0),
-        photo_op_prob: float = 0.5,
-        blur_prob: float = 0.0,
-        blur_radius_range: Tuple[float, float] = (0.0, 0.0),
-        jpeg_prob: float = 0.0,
-        jpeg_quality_range: Tuple[int, int] = (95, 100),
-        multi_scale_range: Tuple[float, float] = (1.0, 1.0),
-        random_crop_size: Optional[Tuple[int, int]] = None,
-        auto_contrast: bool = False,
-        auto_contrast_cutoff: float = 1.0,
-        low_light_preprocess_enable: bool = False,
-        low_light_gamma: float = 1.0,
-        low_light_brightness_gain: float = 1.0,
+        train_preprocess: Optional[Dict[str, Any]] = None,
+        eval_preprocess: Optional[Dict[str, Any]] = None,
     ) -> None:
         assert split in ("train", "val", "test"), f"split must be train/val/test, got {split}"
 
@@ -57,28 +74,61 @@ class CamVidFolderDataset(Dataset):
         self.color2id = color2id
         self.resize_w = int(resize_w)
         self.resize_h = int(resize_h)
-        self.hflip_prob = float(hflip_prob)
         self.ignore_index = int(ignore_index)
         self.training = bool(training)
 
-        self.photo_aug_prob = float(photo_aug_prob)
-        self.photo_aug_prob_current = float(photo_aug_prob)
-        self.brightness_jitter = float(brightness_jitter)
-        self.contrast_jitter = float(contrast_jitter)
-        self.saturation_jitter = float(saturation_jitter)
-        self.gamma_range = (float(gamma_range[0]), float(gamma_range[1]))
-        self.photo_op_prob = float(photo_op_prob)
-        self.blur_prob = float(blur_prob)
-        self.blur_radius_range = (float(blur_radius_range[0]), float(blur_radius_range[1]))
-        self.jpeg_prob = float(jpeg_prob)
-        self.jpeg_quality_range = (int(jpeg_quality_range[0]), int(jpeg_quality_range[1]))
-        self.multi_scale_range = (float(multi_scale_range[0]), float(multi_scale_range[1]))
-        self.random_crop_size = random_crop_size
-        self.auto_contrast = bool(auto_contrast)
-        self.auto_contrast_cutoff = float(auto_contrast_cutoff)
-        self.low_light_preprocess_enable = bool(low_light_preprocess_enable)
-        self.low_light_gamma = float(low_light_gamma)
-        self.low_light_brightness_gain = float(low_light_brightness_gain)
+        train_cfg = _build_default_train_preprocess()
+        if train_preprocess is not None:
+            train_cfg.update(train_preprocess)
+
+        eval_cfg = _build_default_eval_preprocess()
+        if eval_preprocess is not None:
+            eval_cfg.update(eval_preprocess)
+
+        self.train_preprocess = train_cfg
+        self.eval_preprocess = eval_cfg
+
+        self.hflip_prob = float(self.train_preprocess["hflip_prob"])
+        self.photo_aug_prob = float(self.train_preprocess["photo_aug_prob"])
+        self.photo_aug_prob_current = float(self.train_preprocess["photo_aug_prob"])
+        self.brightness_jitter = float(self.train_preprocess["brightness_jitter"])
+        self.contrast_jitter = float(self.train_preprocess["contrast_jitter"])
+        self.saturation_jitter = float(self.train_preprocess["saturation_jitter"])
+        self.gamma_range = (
+            float(self.train_preprocess["gamma_range"][0]),
+            float(self.train_preprocess["gamma_range"][1]),
+        )
+        self.photo_op_prob = float(self.train_preprocess["photo_op_prob"])
+        self.blur_prob = float(self.train_preprocess["blur_prob"])
+        self.blur_radius_range = (
+            float(self.train_preprocess["blur_radius_range"][0]),
+            float(self.train_preprocess["blur_radius_range"][1]),
+        )
+        self.jpeg_prob = float(self.train_preprocess["jpeg_prob"])
+        self.jpeg_quality_range = (
+            int(self.train_preprocess["jpeg_quality_range"][0]),
+            int(self.train_preprocess["jpeg_quality_range"][1]),
+        )
+        self.multi_scale_range = (
+            float(self.train_preprocess["multi_scale_range"][0]),
+            float(self.train_preprocess["multi_scale_range"][1]),
+        )
+        self.random_crop_size = self.train_preprocess["random_crop_size"]
+
+        active_eval = self.eval_preprocess
+        self.auto_contrast = bool(active_eval["auto_contrast"])
+        self.auto_contrast_cutoff = float(active_eval["auto_contrast_cutoff"])
+        self.low_light_preprocess_enable = bool(active_eval["low_light_preprocess_enable"])
+        self.low_light_gamma = float(active_eval["low_light_gamma"])
+        self.low_light_brightness_gain = float(active_eval["low_light_brightness_gain"])
+
+        if self.training:
+            active_train = self.train_preprocess
+            self.auto_contrast = bool(active_train["auto_contrast"])
+            self.auto_contrast_cutoff = float(active_train["auto_contrast_cutoff"])
+            self.low_light_preprocess_enable = bool(active_train["low_light_preprocess_enable"])
+            self.low_light_gamma = float(active_train["low_light_gamma"])
+            self.low_light_brightness_gain = float(active_train["low_light_brightness_gain"])
 
         self._aug_stats = {
             "samples_seen": 0,

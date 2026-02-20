@@ -49,3 +49,66 @@ def build_remap_pack_from_names(
     id2name_new = [id2name_old[oid] for oid in old_ids]
 
     return RemapPack(old2new=old2new, lut=lut, id2color_new=id2color_new, id2name_new=id2name_new)
+
+
+CAMVID_11_GROUP_NAME_SPECS: List[List[str]] = [
+    ["Sky"],
+    ["Building", "Wall", "Archway", "Bridge", "Tunnel"],
+    ["Column_Pole", "TrafficCone"],
+    ["Road", "LaneMkgsDriv", "LaneMkgsNonDriv"],
+    ["Sidewalk", "RoadShoulder", "ParkingBlock"],
+    ["Tree", "VegetationMisc"],
+    ["SignSymbol", "TrafficLight", "Misc_Text"],
+    ["Fence"],
+    ["Car", "SUVPickupTruck", "Truck_Bus", "Train", "OtherMoving", "MotorcycleScooter"],
+    ["Pedestrian", "Child", "Animal", "CartLuggagePram"],
+    ["Bicyclist"],
+]
+
+
+def _build_name2old(id2name: List[str] | Dict[int, str]) -> Dict[str, int]:
+    if isinstance(id2name, dict):
+        items = id2name.items()
+    else:
+        items = enumerate(id2name)
+    return {name: int(old_id) for old_id, name in items}
+
+
+def build_camvid_11_groups_from_names(id2name: List[str] | Dict[int, str]) -> List[List[int]]:
+    name2old = _build_name2old(id2name)
+
+    groups_11: List[List[int]] = []
+    for cls_group in CAMVID_11_GROUP_NAME_SPECS:
+        missing = [name for name in cls_group if name not in name2old]
+        if missing:
+            raise ValueError(f"class_dict.csv 缺少类别: {missing}")
+        groups_11.append([name2old[name] for name in cls_group])
+
+    return groups_11
+
+
+def assert_camvid_key_old_ids(id2name: List[str] | Dict[int, str]) -> None:
+    if isinstance(id2name, dict):
+        get_name = lambda idx: str(id2name.get(idx, "<MISSING>"))
+    else:
+        get_name = lambda idx: str(id2name[idx]) if 0 <= idx < len(id2name) else "<MISSING>"
+
+    expected = {
+        21: "Sky",
+        17: "Road",
+        5: "Car",
+    }
+    print("[CLASS-DICT] key old_id check:")
+    mismatch = []
+    for old_id, expected_name in expected.items():
+        actual_name = get_name(old_id)
+        print(f"  - old_id {old_id:>2}: expected={expected_name}, actual={actual_name}")
+        if actual_name != expected_name:
+            mismatch.append((old_id, expected_name, actual_name))
+
+    if mismatch:
+        details = "; ".join(
+            f"old_id {old_id} expected {expected_name} but got {actual_name}"
+            for old_id, expected_name, actual_name in mismatch
+        )
+        raise RuntimeError(f"class_dict.csv 顺序与 GROUPS_11 假设不一致: {details}")

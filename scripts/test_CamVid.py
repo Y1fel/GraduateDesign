@@ -1,5 +1,4 @@
 import argparse
-import csv
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -12,7 +11,13 @@ from src.datasets.CamVid import CamVidFolderDataset
 from src.eval.mIoU import compute_miou
 from src.models.deeplabv3_plus import DeepLabV3Plus
 from src.utils.Id2Mask import load_class_dict_csv, id_mask_to_color
+from src.utils.remap import assert_camvid_key_old_ids, build_camvid_11_groups_from_names
 from src.viz.visualizer import save_predictions_triplet
+
+
+CLASS_NAMES_11 = [
+    "Sky", "Building", "Pole", "Road", "Pavement", "Tree", "SignSymbol", "Fence", "Car", "Pedestrian", "Bicyclist"
+]
 
 
 @dataclass
@@ -34,6 +39,17 @@ class TestConfig:
     num_workers: int = 8
 
     save_triplet_max: int = 100
+
+    eval_auto_contrast_enable: bool = False
+    eval_auto_contrast_cutoff: float = 1.0
+    eval_low_light_preprocess_enable: bool = False
+    low_light_gamma: float = 1.0
+    low_light_brightness_gain: float = 1.0
+
+    drift_upper_ratio: float = 2.0
+    drift_lower_ratio: float = 0.5
+    collapse_warn_ratio: float = 0.60
+    confusion_topk: int = 10
 
 
 def resolve_ckpt_path(ckpt: Path) -> Path:
@@ -95,40 +111,168 @@ def save_all_predictions(
     out_dir: Path,
     id2color,
     ignore_index: int,
-) -> None:
+    num_classes: int,
+) -> tuple[np.ndarray, np.ndarray]:
     pred_color_dir = out_dir / "pred_color"
     pred_id_dir = out_dir / "pred_id"
     pred_color_dir.mkdir(parents=True, exist_ok=True)
     pred_id_dir.mkdir(parents=True, exist_ok=True)
 
-    for imgs, _masks, names in loader:
+    pred_counts = np.zeros((num_classes,), dtype=np.int64)
+    confusion = np.zeros((num_classes, num_classes), dtype=np.int64)  # [gt, pred]
+
+    for imgs, masks, names in loader:
         imgs = imgs.to(device, non_blocking=True)
 
         logits = model(imgs)
         pred = torch.argmax(logits, dim=1)  # (N,H,W)
 
-        pred_np = pred.detach().cpu().numpy().astype(np.uint8)
+        pred_np = pred.detach().cpu().numpy().astype(np.int64)
+        gt_np = masks.detach().cpu().numpy().astype(np.int64)
 
-        for i in range(pred_np.shape[0]):
+        valid_pred = (pred_np >= 0) & (pred_np < num_classes)
+        if np.any(valid_pred):
+            pred_counts += np.bincount(pred_np[valid_pred], minlength=num_classes)[:num_classes]
+
+        valid_gt = (gt_np != ignore_index) & (gt_np >= 0) & (gt_np < num_classes)
+        valid_pair = valid_gt & valid_pred
+        if np.any(valid_pair):
+            linear = gt_np[valid_pair] * num_classes + pred_np[valid_pair]
+            confusion += np.bincount(linear, minlength=num_classes * num_classes).reshape(num_classes, num_classes)
+
+        pred_u8 = pred_np.astype(np.uint8)
+        for i in range(pred_u8.shape[0]):
             stem = Path(names[i]).stem
-            pr_id = pred_np[i]  # (H,W) 离散标签：不要做 bilinear resize
+            pr_id = pred_u8[i]  # (H,W) 离散标签：不要做 bilinear resize
             pr_rgb = id_mask_to_color(pr_id, id2color, ignore_index)  # (H,W,3)
 
             Image.fromarray(pr_rgb).save(pred_color_dir / f"{stem}.png")
             Image.fromarray(pr_id).save(pred_id_dir / f"{stem}.png")
 
+    return pred_counts, confusion
 
-def build_loader(cfg: TestConfig, color2id, label_lut: np.ndarray) -> DataLoader:
+
+def compute_split_class_distribution(
+    cfg: TestConfig,
+    color2id,
+    label_lut: np.ndarray,
+    split: str,
+    train_preprocess: dict,
+    eval_preprocess: dict,
+) -> np.ndarray:
+    ds = CamVidFolderDataset(
+        root=cfg.data_root,
+        split=split,
+        color2id=color2id,
+        resize_w=cfg.resize_w,
+        resize_h=cfg.resize_h,
+        ignore_index=cfg.ignore_index,
+        training=False,
+        label_lut=label_lut,
+        train_preprocess=train_preprocess,
+        eval_preprocess=eval_preprocess,
+    )
+    loader = DataLoader(
+        ds,
+        batch_size=cfg.batch_size,
+        shuffle=False,
+        num_workers=cfg.num_workers,
+        pin_memory=True,
+        drop_last=False,
+    )
+
+    counts = np.zeros((cfg.num_classes,), dtype=np.int64)
+    for _imgs, masks, _names in loader:
+        masks_np = masks.detach().cpu().numpy().astype(np.int64)
+        valid = (masks_np != cfg.ignore_index) & (masks_np >= 0) & (masks_np < cfg.num_classes)
+        if np.any(valid):
+            counts += np.bincount(masks_np[valid], minlength=cfg.num_classes)[:cfg.num_classes]
+    return counts
+
+
+def print_distribution_comparison(
+    class_names: list[str],
+    pred_counts: np.ndarray,
+    train_counts: np.ndarray,
+    lower: float,
+    upper: float,
+    collapse_warn_ratio: float,
+) -> None:
+    pred_total = max(int(pred_counts.sum()), 1)
+    train_total = max(int(train_counts.sum()), 1)
+
+    pred_ratio = pred_counts / pred_total
+    train_ratio = train_counts / train_total
+
+    print("[DIST] class pixel ratio: test prediction vs train ground-truth")
+    for i, cls_name in enumerate(class_names):
+        p = float(pred_ratio[i])
+        t = float(train_ratio[i])
+        if t <= 0.0:
+            drift = np.inf if p > 0 else 1.0
+        else:
+            drift = p / t
+
+        drift_flag = ""
+        if drift < lower or drift > upper:
+            drift_flag = " <-- 异常偏离"
+        print(
+            f"  - {cls_name:<11} pred={p * 100:6.2f}% | train={t * 100:6.2f}% | "
+            f"ratio={drift:6.2f}{drift_flag}"
+        )
+
+    max_idx = int(np.argmax(pred_ratio))
+    if pred_ratio[max_idx] > collapse_warn_ratio:
+        print(
+            "[WARN] 疑似类别塌缩/映射异常: "
+            f"{class_names[max_idx]} 占比 {pred_ratio[max_idx] * 100:.2f}% (> {collapse_warn_ratio * 100:.0f}%)"
+        )
+
+
+def save_topk_confusion_pairs(
+    confusion: np.ndarray,
+    class_names: list[str],
+    out_dir: Path,
+    topk: int,
+) -> None:
+    pairs = []
+    n = confusion.shape[0]
+    for gt in range(n):
+        for pred in range(n):
+            if gt == pred:
+                continue
+            cnt = int(confusion[gt, pred])
+            if cnt > 0:
+                pairs.append((cnt, gt, pred))
+
+    pairs.sort(reverse=True)
+    top_pairs = pairs[:max(1, int(topk))]
+
+    out_path = out_dir / "topk_confusion_pairs.txt"
+    with out_path.open("w", encoding="utf-8") as f:
+        f.write("Top-K confusion pairs (gt -> pred):\n")
+        for rank, (cnt, gt, pred) in enumerate(top_pairs, start=1):
+            line = f"{rank:02d}. {class_names[gt]} -> {class_names[pred]}: {cnt}\n"
+            f.write(line)
+
+    print("[CONFUSION] Top-K 错分对:")
+    for rank, (cnt, gt, pred) in enumerate(top_pairs, start=1):
+        print(f"  {rank:02d}. {class_names[gt]} -> {class_names[pred]}: {cnt}")
+    print(f"[CONFUSION] Saved summary to: {out_path}")
+
+
+def build_loader(cfg: TestConfig, color2id, label_lut: np.ndarray, train_preprocess: dict, eval_preprocess: dict) -> DataLoader:
     test_ds = CamVidFolderDataset(
         root=cfg.data_root,
         split="test",
         color2id=color2id,
         resize_w=cfg.resize_w,
         resize_h=cfg.resize_h,
-        hflip_prob=0.0,
         ignore_index=cfg.ignore_index,
         training=False,
         label_lut=label_lut,  # ✅ 关键：和训练一致（32->11）
+        train_preprocess=train_preprocess,
+        eval_preprocess=eval_preprocess,
     )
     return DataLoader(
         test_ds,
@@ -192,27 +336,51 @@ def main() -> None:
     print(f"[INFO] out   = {cfg.out_dir}")
     print(f"[INFO] os={cfg.output_stride}  head_norm={cfg.head_norm}")
 
-    color2id, id2color_32, _id2name = load_class_dict_csv(cfg.data_root / "class_dict.csv")
+    color2id, id2color_32, id2name = load_class_dict_csv(cfg.data_root / "class_dict.csv")
+    assert_camvid_key_old_ids(id2name)
 
-    GROUPS_11 = [
-        [21],                 # 0 Sky
-        [4, 31, 1, 3, 28],     # 1 Building: Building, Wall, Archway, Bridge, Tunnel
-        [8, 23],              # 2 Pole: Column_Pole + TrafficCone
-        [17, 10, 11],         # 3 Road: Road + LaneMkgsDriv + LaneMkgsNonDriv
-        [19, 18, 15],         # 4 Pavement: Sidewalk + RoadShoulder + ParkingBlock
-        [26, 29],             # 5 Tree: Tree + VegetationMisc
-        [20, 24, 12],         # 6 SignSymbol: SignSymbol + TrafficLight + Misc_Text
-        [9],                  # 7 Fence
-        [5, 22, 27, 25, 14, 13],  # 8 Car: Car + SUVPickupTruck + Truck_Bus + Train + OtherMoving + MotorcycleScooter
-        [16, 7, 0, 6],         # 9 Pedestrian: Pedestrian + Child + Animal + CartLuggagePram
-        [2],                  # 10 Bicyclist
-    ]
+    GROUPS_11 = build_camvid_11_groups_from_names(id2name)
     label_lut = build_merge_lut(GROUPS_11, ignore_index=cfg.ignore_index)
 
-    rep_old_ids_11 = [21, 4, 8, 17, 19, 26, 20, 9, 5, 16, 2]
+    rep_old_ids_11 = [group[0] for group in GROUPS_11]
     id2color_11 = [id2color_32[i] for i in rep_old_ids_11]
 
-    test_loader = build_loader(cfg, color2id, label_lut)
+    train_preprocess = {
+        "hflip_prob": 0.0,
+        "photo_aug_prob": 0.0,
+        "brightness_jitter": 0.0,
+        "contrast_jitter": 0.0,
+        "saturation_jitter": 0.0,
+        "gamma_range": (1.0, 1.0),
+        "photo_op_prob": 0.0,
+        "blur_prob": 0.0,
+        "blur_radius_range": (0.0, 0.0),
+        "jpeg_prob": 0.0,
+        "jpeg_quality_range": (95, 100),
+        "multi_scale_range": (1.0, 1.0),
+        "random_crop_size": None,
+        "auto_contrast": False,
+        "auto_contrast_cutoff": 1.0,
+        "low_light_preprocess_enable": False,
+        "low_light_gamma": 1.0,
+        "low_light_brightness_gain": 1.0,
+    }
+    eval_preprocess = {
+        "auto_contrast": cfg.eval_auto_contrast_enable,
+        "auto_contrast_cutoff": cfg.eval_auto_contrast_cutoff,
+        "low_light_preprocess_enable": cfg.eval_low_light_preprocess_enable,
+        "low_light_gamma": cfg.low_light_gamma,
+        "low_light_brightness_gain": cfg.low_light_brightness_gain,
+    }
+
+    print(
+        "[PREPROCESS][test] "
+        f"low_light={cfg.eval_low_light_preprocess_enable} gamma={cfg.low_light_gamma:.2f} "
+        f"brightness_gain={cfg.low_light_brightness_gain:.2f} "
+        f"auto_contrast={cfg.eval_auto_contrast_enable} cutoff={cfg.eval_auto_contrast_cutoff:.2f}"
+    )
+
+    test_loader = build_loader(cfg, color2id, label_lut, train_preprocess, eval_preprocess)
     model = load_model(cfg, device)
 
     test_miou = compute_miou(model, test_loader, device, cfg.num_classes, cfg.ignore_index)
@@ -229,13 +397,37 @@ def main() -> None:
         max_items=cfg.save_triplet_max,
     )
 
-    save_all_predictions(
+    pred_counts, confusion = save_all_predictions(
         model=model,
         loader=test_loader,
         device=device,
         out_dir=cfg.out_dir,
         id2color=id2color_11,  # ✅ 11类颜色
         ignore_index=cfg.ignore_index,
+        num_classes=cfg.num_classes,
+    )
+
+    train_counts = compute_split_class_distribution(
+        cfg=cfg,
+        color2id=color2id,
+        label_lut=label_lut,
+        split="train",
+        train_preprocess=train_preprocess,
+        eval_preprocess=eval_preprocess,
+    )
+    print_distribution_comparison(
+        class_names=CLASS_NAMES_11,
+        pred_counts=pred_counts,
+        train_counts=train_counts,
+        lower=cfg.drift_lower_ratio,
+        upper=cfg.drift_upper_ratio,
+        collapse_warn_ratio=cfg.collapse_warn_ratio,
+    )
+    save_topk_confusion_pairs(
+        confusion=confusion,
+        class_names=CLASS_NAMES_11,
+        out_dir=cfg.out_dir,
+        topk=cfg.confusion_topk,
     )
 
     print("[DONE] Test inference finished.")
