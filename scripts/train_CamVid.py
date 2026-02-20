@@ -24,6 +24,14 @@ from src.losses.composite import CrossEntropyDiceLoss
 
 @dataclass
 class TrainConfig:
+    """训练脚本的集中式超参数配置。
+
+    这个 dataclass 的作用是把数据路径、模型结构、损失函数、增强策略、
+    可视化与日志输出等超参数收敛到一个对象里，方便：
+    1) 统一管理默认值；
+    2) 在实验输出目录保存完整配置；
+    3) 通过命令行参数做少量覆盖，而不破坏主配置结构。
+    """
     data_root: Path = PROJECT_ROOT / "data" / "archive" / "CamVid"
 
     num_classes: int = 32
@@ -107,6 +115,18 @@ class TrainConfig:
 
 
 def assert_camvid_key_old_ids(id2name: list[str] | dict[int, str]) -> None:
+    """校验 CamVid 类别字典是否符合训练脚本对 old_id 的顺序假设。
+
+    训练/评估流程依赖 `class_dict.csv` 中旧标签 id 到类别名称的一致映射。
+    这里选取若干关键类别（Sky/Road/Car）做快速 sanity check。
+
+    Args:
+        id2name: 旧标签 id 到类别名的映射，可为 list 或 dict。
+
+    Raises:
+        RuntimeError: 当关键 old_id 对应名称与预期不一致时抛出，
+            防止后续训练在错误标签空间上进行。
+    """
     if isinstance(id2name, dict):
         get_name = lambda idx: str(id2name.get(idx, "<MISSING>"))
     else:
@@ -129,6 +149,14 @@ def assert_camvid_key_old_ids(id2name: list[str] | dict[int, str]) -> None:
         raise RuntimeError(f"class_dict.csv 顺序假设不一致: {details}")
 
 def parse_args() -> argparse.Namespace:
+    """解析训练脚本命令行参数。
+
+    当前只暴露与实验对比直接相关的参数（loss preset、边界权重、ablation 变体），
+    其余参数使用 `TrainConfig` 默认值，避免命令行参数过多导致实验不可复现。
+
+    Returns:
+        argparse.Namespace: 命令行参数对象。
+    """
     parser = argparse.ArgumentParser(description="Train DeepLabV3+ on CamVid")
     parser.add_argument(
         "--loss_preset",
@@ -149,6 +177,21 @@ def parse_args() -> argparse.Namespace:
 
 
 def apply_ablation_variant(cfg: TrainConfig, variant: str) -> None:
+    """根据消融实验代号修改配置。
+
+    该函数用于论文/报告中的可控变量实验：
+    - A: baseline，不改动；
+    - B: 关闭 blur/jpeg；
+    - C: 关闭 mid-level fusion；
+    - D05/D10: 指定 boundary weight。
+
+    Args:
+        cfg: 待修改的训练配置对象。
+        variant: 消融实验代号。
+
+    Raises:
+        ValueError: 输入未知的 variant 时抛出。
+    """
     v = variant.upper()
     if v == "A":
         return
@@ -169,6 +212,11 @@ def apply_ablation_variant(cfg: TrainConfig, variant: str) -> None:
 
 
 def resolve_boundary_weight_for_epoch(target_weight: float, epoch: int, warmup_epochs: int) -> float:
+    """为当前 epoch 计算边界损失权重（支持 warmup）。
+
+    当 `warmup_epochs > 0` 时，权重在前 warmup 轮线性从 0 增长到 `target_weight`，
+    目的是避免训练初期边界约束过强影响主分割收敛。
+    """
     if warmup_epochs <= 0:
         return float(target_weight)
     progress = min(max(epoch, 0), warmup_epochs) / float(warmup_epochs)
@@ -176,6 +224,17 @@ def resolve_boundary_weight_for_epoch(target_weight: float, epoch: int, warmup_e
 
 
 def resolve_effective_tone_aug(cfg: TrainConfig) -> dict[str, float]:
+    """计算最终生效的色调类增强强度。
+
+    当低照度预处理、自动对比度、以及 photometric 增强同时启用时，
+    容易出现“叠加强化”导致样本分布偏移过大。函数会按配置自动削弱：
+    - photometric 触发概率；
+    - photo op 子操作概率；
+    - brightness/contrast/saturation 抖动幅度。
+
+    Returns:
+        dict[str, float]: 训练集实际采用的增强参数。
+    """
     effective = {
         "photo_aug_prob": float(cfg.photo_aug_prob),
         "photo_op_prob": float(cfg.photo_op_prob),
@@ -201,6 +260,10 @@ def resolve_effective_tone_aug(cfg: TrainConfig) -> dict[str, float]:
 
 
 def apply_loss_preset(cfg: TrainConfig, loss_preset: str) -> None:
+    """根据预设名称选择 CE 变体和类平衡策略。
+
+    这里把可对比的 loss 组合固化成有限 preset，确保实验对比只改变必要变量。
+    """
     cfg.loss_preset = loss_preset
 
     if loss_preset == "baseline":
@@ -225,6 +288,13 @@ def compute_class_pixel_distribution(
     num_classes: int,
     ignore_index: int,
 ) -> np.ndarray:
+    """统计训练标签中每个类别的像素数量。
+
+    流程：逐个读取 mask（RGB）→ 颜色映射到 old_id → 过滤 ignore_index → bincount 累加。
+    该统计用于：
+    - 打印长尾分布；
+    - 计算 class-balanced CE 权重。
+    """
     mask_paths = sorted([p for p in masks_dir.iterdir() if p.is_file()])
     if not mask_paths:
         raise RuntimeError(f"No masks found for pixel statistics in {masks_dir}")
@@ -241,12 +311,21 @@ def compute_class_pixel_distribution(
 
 
 def torchvision_safe_open_rgb(path: Path):
+    """以 RGB 模式安全打开图像文件。
+
+    单独封装读取逻辑，便于后续替换读取后端或在此处加入异常处理策略。
+    """
     from PIL import Image
 
     return Image.open(path).convert("RGB")
 
 
 def class_balanced_weights_from_counts(counts: np.ndarray, beta: float, eps: float = 1e-8) -> np.ndarray:
+    """根据 Effective Number of Samples 公式计算类别权重。
+
+    对于样本少（像素少）的类别，分配更高权重；无样本类别权重置 0。
+    最后对非零权重做归一化，使其均值接近 1，避免整体 loss 尺度突变。
+    """
     counts = counts.astype(np.float64)
     beta = float(beta)
     eff_num = 1.0 - np.power(beta, counts)
@@ -260,6 +339,7 @@ def class_balanced_weights_from_counts(counts: np.ndarray, beta: float, eps: flo
 
 
 def print_small_object_metrics(metric_name: str, values: Sequence[float], names: Sequence[str], indices: Sequence[int]) -> None:
+    """打印指定小目标类别的评估指标，便于观察长尾类别表现。"""
     msg = []
     for cls_name, idx in zip(names, indices):
         v = values[idx]
@@ -281,6 +361,17 @@ def train_one_epoch(
     base_lr: float,
     power: float = 0.9,
 ) -> dict[str, float]:
+    """执行单个 epoch 的训练。
+
+    核心步骤：
+    1) polynomial lr 调度；
+    2) 前向计算 + CE/Dice 组合损失；
+    3) 反向传播与参数更新；
+    4) 汇总 batch 级损失为 epoch 均值。
+
+    Returns:
+        dict[str, float]: `total/ce/dice` 三项平均损失。
+    """
     model.train()
     total_loss, total_ce, total_dice, n = 0.0, 0.0, 0.0, 0
 
@@ -317,6 +408,7 @@ def train_one_epoch(
 
 @torch.inference_mode()
 def evaluate_loss(model, loader, criterion, device) -> dict[str, float]:
+    """在验证集上计算平均损失（不更新梯度）。"""
     model.eval()
     total_loss = 0.0
     total_ce = 0.0
@@ -356,6 +448,11 @@ def save_vis_using_best_ckpt(
     max_items: int,
     best_ckpt_path: Path,
 ) -> None:
+    """临时加载 best checkpoint 做可视化，再恢复当前模型权重。
+
+    这样可以保证保存的可视化结果始终对应“当前最优模型”，
+    同时不打断训练过程中的参数状态。
+    """
     cur_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
 
     if best_ckpt_path.exists():
@@ -379,6 +476,14 @@ def save_vis_using_best_ckpt(
 
 
 def main() -> None:
+    """训练脚本入口函数。
+
+    主要流程：
+    - 读取配置与命令行覆盖；
+    - 构建数据集/模型/损失/优化器；
+    - 逐 epoch 训练并验证；
+    - 记录指标、保存 best/periodic checkpoint、输出可视化结果。
+    """
     args = parse_args()
     cfg = TrainConfig()
     apply_loss_preset(cfg, args.loss_preset or cfg.loss_preset)
