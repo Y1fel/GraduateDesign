@@ -43,8 +43,8 @@ class TrainConfig:
     lr_0: float = 5e-4
     weight_decay: float = 1e-4
 
-    ce_weight: float = 1.0
-    dice_weight: float = 0.5
+    ce_weight: float = 1
+    dice_weight: float = 0.0
     label_smoothing: float = 0.0
 
     output_stride: int = 8
@@ -54,8 +54,8 @@ class TrainConfig:
 
     resize_h: int = 720
     resize_w: int = 960
-    crop_h: int = 720
-    crop_w: int = 960
+    crop_h: int = 512
+    crop_w: int = 768
     train_multi_scale_min: float = 1.0
     train_multi_scale_max: float = 1.0
     hflip_prob: float = 0.5
