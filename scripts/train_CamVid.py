@@ -18,6 +18,7 @@ from src.eval.mIoU import compute_segmentation_metrics
 from src.models.deeplabv3_plus import DeepLabV3Plus
 from src.utils.Id2Mask import load_class_dict_csv
 from src.utils.Id2Mask import color_mask_to_id
+from src.utils.remap import assert_camvid_key_old_ids, build_camvid_11_groups_from_names
 from src.viz.visualizer import save_predictions_triplet
 from src.losses.composite import CrossEntropyDiceLoss
 
@@ -67,9 +68,13 @@ class TrainConfig:
     jpeg_quality_max: int = 98
     photo_aug_warmup_epochs: int = 20
 
-    auto_contrast: bool = True
-    auto_contrast_cutoff: float = 1.0
-    low_light_preprocess_enable: bool = True
+    train_auto_contrast_enable: bool = True
+    train_auto_contrast_cutoff: float = 1.0
+    eval_auto_contrast_enable: bool = False
+    eval_auto_contrast_cutoff: float = 1.0
+
+    train_low_light_preprocess_enable: bool = True
+    eval_low_light_preprocess_enable: bool = False
     low_light_gamma: float = 0.85
     low_light_brightness_gain: float = 1.10
 
@@ -156,7 +161,7 @@ def resolve_effective_tone_aug(cfg: TrainConfig) -> dict[str, float]:
         "saturation_jitter": float(cfg.saturation_jitter),
     }
 
-    if cfg.avoid_overstrong_tone_ops and cfg.low_light_preprocess_enable and cfg.auto_contrast:
+    if cfg.avoid_overstrong_tone_ops and cfg.train_low_light_preprocess_enable and cfg.train_auto_contrast_enable:
         scale = max(0.0, min(1.0, float(cfg.jitter_scale_when_tone_stack)))
         effective["photo_aug_prob"] = min(effective["photo_aug_prob"], float(cfg.photo_aug_prob_cap_when_tone_stack))
         effective["photo_op_prob"] = min(effective["photo_op_prob"], float(cfg.photo_op_prob_cap_when_tone_stack))
@@ -390,28 +395,17 @@ def main() -> None:
 
     # 32类颜色表/映射仍用于 RGB->old_id 解码
     csv_path = cfg.data_root / "class_dict.csv"
-    color2id, id2color, _id2name = load_class_dict_csv(csv_path)
+    color2id, id2color, id2name = load_class_dict_csv(csv_path)
+    assert_camvid_key_old_ids(id2name)
 
-    # 11类分组（old_id -> new_id）
-    GROUPS_11 = [
-        [21],                 # 0 Sky
-        [4, 31, 1, 3, 28],     # 1 Building: Building, Wall, Archway, Bridge, Tunnel
-        [8, 23],              # 2 Pole: Column_Pole + TrafficCone
-        [17, 10, 11],         # 3 Road: Road + LaneMkgsDriv + LaneMkgsNonDriv
-        [19, 18, 15],         # 4 Pavement: Sidewalk + RoadShoulder + ParkingBlock
-        [26, 29],             # 5 Tree: Tree + VegetationMisc
-        [20, 24, 12],         # 6 SignSymbol: SignSymbol + TrafficLight + Misc_Text
-        [9],                  # 7 Fence
-        [5, 22, 27, 25, 14, 13],  # 8 Car: Car + SUVPickupTruck + Truck_Bus + Train + OtherMoving + MotorcycleScooter
-        [16, 7, 0, 6],         # 9 Pedestrian: Pedestrian + Child + Animal + CartLuggagePram
-        [2],                  # 10 Bicyclist
-    ]
+    # 11类分组（按类别名映射为 old_id，避免依赖 csv 行号）
+    GROUPS_11 = build_camvid_11_groups_from_names(id2name)
 
     label_lut = build_merge_lut(GROUPS_11, ignore_index=cfg.ignore_index)
     label_lut[30] = np.uint8(cfg.ignore_index)  # Void ignore
 
-    # 11类可视化颜色（代表色）
-    rep_old_ids_11 = [21, 4, 8, 17, 19, 26, 20, 9, 5, 16, 2]
+    # 11类可视化颜色（每个大类取第一个子类作为代表色）
+    rep_old_ids_11 = [group[0] for group in GROUPS_11]
     id2color_11 = [id2color[i] for i in rep_old_ids_11]
 
     # outputs
@@ -420,9 +414,16 @@ def main() -> None:
     out.init_metrics()
     print(f"[INFO] run_dir = {out.run_dir}")
     print(
-        "[PREPROCESS] low_light="
-        f"{cfg.low_light_preprocess_enable} gamma={cfg.low_light_gamma:.2f} "
-        f"brightness_gain={cfg.low_light_brightness_gain:.2f} auto_contrast={cfg.auto_contrast}"
+        "[PREPROCESS][train] "
+        f"low_light={cfg.train_low_light_preprocess_enable} gamma={cfg.low_light_gamma:.2f} "
+        f"brightness_gain={cfg.low_light_brightness_gain:.2f} "
+        f"auto_contrast={cfg.train_auto_contrast_enable} cutoff={cfg.train_auto_contrast_cutoff:.2f}"
+    )
+    print(
+        "[PREPROCESS][val] "
+        f"low_light={cfg.eval_low_light_preprocess_enable} gamma={cfg.low_light_gamma:.2f} "
+        f"brightness_gain={cfg.low_light_brightness_gain:.2f} "
+        f"auto_contrast={cfg.eval_auto_contrast_enable} cutoff={cfg.eval_auto_contrast_cutoff:.2f}"
     )
 
     class_names_11 = [
@@ -482,33 +483,58 @@ def main() -> None:
     tone_aug = resolve_effective_tone_aug(cfg)
 
     # datasets
+    train_preprocess = {
+        "hflip_prob": cfg.hflip_prob,
+        "photo_aug_prob": tone_aug["photo_aug_prob"],
+        "brightness_jitter": tone_aug["brightness_jitter"],
+        "contrast_jitter": tone_aug["contrast_jitter"],
+        "saturation_jitter": tone_aug["saturation_jitter"],
+        "gamma_range": (cfg.gamma_min, cfg.gamma_max),
+        "photo_op_prob": tone_aug["photo_op_prob"],
+        "blur_prob": effective_blur_prob,
+        "blur_radius_range": (cfg.blur_radius_min, cfg.blur_radius_max),
+        "jpeg_prob": effective_jpeg_prob,
+        "jpeg_quality_range": (cfg.jpeg_quality_min, cfg.jpeg_quality_max),
+        "multi_scale_range": (cfg.train_multi_scale_min, cfg.train_multi_scale_max),
+        "random_crop_size": None,
+        "auto_contrast": cfg.train_auto_contrast_enable,
+        "auto_contrast_cutoff": cfg.train_auto_contrast_cutoff,
+        "low_light_preprocess_enable": cfg.train_low_light_preprocess_enable,
+        "low_light_gamma": cfg.low_light_gamma,
+        "low_light_brightness_gain": cfg.low_light_brightness_gain,
+    }
+    eval_preprocess = {
+        "auto_contrast": cfg.eval_auto_contrast_enable,
+        "auto_contrast_cutoff": cfg.eval_auto_contrast_cutoff,
+        "low_light_preprocess_enable": cfg.eval_low_light_preprocess_enable,
+        "low_light_gamma": cfg.low_light_gamma,
+        "low_light_brightness_gain": cfg.low_light_brightness_gain,
+    }
+
+    print(
+        "[PREPROCESS-CONFIG][train] "
+        f"hflip={train_preprocess['hflip_prob']}, multiscale={train_preprocess['multi_scale_range']}, "
+        f"photo_aug_prob={train_preprocess['photo_aug_prob']:.3f}, blur_prob={train_preprocess['blur_prob']:.3f}, "
+        f"jpeg_prob={train_preprocess['jpeg_prob']:.3f}, low_light={train_preprocess['low_light_preprocess_enable']}, "
+        f"auto_contrast={train_preprocess['auto_contrast']}"
+    )
+    print(
+        "[PREPROCESS-CONFIG][val] "
+        f"minimal preprocess (resize+normalize) with low_light={eval_preprocess['low_light_preprocess_enable']}, "
+        f"auto_contrast={eval_preprocess['auto_contrast']}"
+    )
+
     train_ds = CamVidFolderDataset(
         root=cfg.data_root,
         split="train",
         color2id=color2id,
         resize_w=cfg.resize_w,
         resize_h=cfg.resize_h,
-        hflip_prob=cfg.hflip_prob,
         ignore_index=cfg.ignore_index,
         training=True,
         label_lut=label_lut,
-        photo_aug_prob=tone_aug["photo_aug_prob"],
-        brightness_jitter=tone_aug["brightness_jitter"],
-        contrast_jitter=tone_aug["contrast_jitter"],
-        saturation_jitter=tone_aug["saturation_jitter"],
-        gamma_range=(cfg.gamma_min, cfg.gamma_max),
-        photo_op_prob=tone_aug["photo_op_prob"],
-        blur_prob=effective_blur_prob,
-        blur_radius_range=(cfg.blur_radius_min, cfg.blur_radius_max),
-        jpeg_prob=effective_jpeg_prob,
-        jpeg_quality_range=(cfg.jpeg_quality_min, cfg.jpeg_quality_max),
-        multi_scale_range=(cfg.train_multi_scale_min, cfg.train_multi_scale_max),
-        random_crop_size=None,
-        auto_contrast=cfg.auto_contrast,
-        auto_contrast_cutoff=cfg.auto_contrast_cutoff,
-        low_light_preprocess_enable=cfg.low_light_preprocess_enable,
-        low_light_gamma=cfg.low_light_gamma,
-        low_light_brightness_gain=cfg.low_light_brightness_gain,
+        train_preprocess=train_preprocess,
+        eval_preprocess=eval_preprocess,
     )
     val_ds = CamVidFolderDataset(
         root=cfg.data_root,
@@ -516,15 +542,11 @@ def main() -> None:
         color2id=color2id,
         resize_w=cfg.resize_w,
         resize_h=cfg.resize_h,
-        hflip_prob=0.0,
         ignore_index=cfg.ignore_index,
         training=False,
         label_lut=label_lut,
-        auto_contrast=cfg.auto_contrast,
-        auto_contrast_cutoff=cfg.auto_contrast_cutoff,
-        low_light_preprocess_enable=cfg.low_light_preprocess_enable,
-        low_light_gamma=cfg.low_light_gamma,
-        low_light_brightness_gain=cfg.low_light_brightness_gain,
+        train_preprocess=train_preprocess,
+        eval_preprocess=eval_preprocess,
     )
 
     train_loader = DataLoader(
