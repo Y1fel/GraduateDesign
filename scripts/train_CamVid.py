@@ -18,7 +18,6 @@ from src.eval.mIoU import compute_segmentation_metrics
 from src.models.deeplabv3_plus import DeepLabV3Plus
 from src.utils.Id2Mask import load_class_dict_csv
 from src.utils.Id2Mask import color_mask_to_id
-from src.utils.remap import assert_camvid_key_old_ids, build_camvid_11_groups_from_names
 from src.viz.visualizer import save_predictions_triplet
 from src.losses.composite import CrossEntropyDiceLoss
 
@@ -27,7 +26,7 @@ from src.losses.composite import CrossEntropyDiceLoss
 class TrainConfig:
     data_root: Path = PROJECT_ROOT / "data" / "archive" / "CamVid"
 
-    num_classes: int = 11
+    num_classes: int = 32
     ignore_index: int = 255
 
     epochs: int = 100
@@ -104,6 +103,30 @@ class TrainConfig:
     outputs_root: Path = PROJECT_ROOT / "outputs"
     seed: int = 42
 
+
+
+
+def assert_camvid_key_old_ids(id2name: list[str] | dict[int, str]) -> None:
+    if isinstance(id2name, dict):
+        get_name = lambda idx: str(id2name.get(idx, "<MISSING>"))
+    else:
+        get_name = lambda idx: str(id2name[idx]) if 0 <= idx < len(id2name) else "<MISSING>"
+
+    expected = {21: "Sky", 17: "Road", 5: "Car"}
+    print("[CLASS-DICT] key old_id check:")
+    mismatch = []
+    for old_id, expected_name in expected.items():
+        actual_name = get_name(old_id)
+        print(f"  - old_id {old_id:>2}: expected={expected_name}, actual={actual_name}")
+        if actual_name != expected_name:
+            mismatch.append((old_id, expected_name, actual_name))
+
+    if mismatch:
+        details = "; ".join(
+            f"old_id {old_id} expected {expected_name} but got {actual_name}"
+            for old_id, expected_name, actual_name in mismatch
+        )
+        raise RuntimeError(f"class_dict.csv 顺序假设不一致: {details}")
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train DeepLabV3+ on CamVid")
@@ -199,7 +222,6 @@ def apply_loss_preset(cfg: TrainConfig, loss_preset: str) -> None:
 def compute_class_pixel_distribution(
     masks_dir: Path,
     color2id,
-    label_lut: np.ndarray,
     num_classes: int,
     ignore_index: int,
 ) -> np.ndarray:
@@ -211,10 +233,9 @@ def compute_class_pixel_distribution(
     for p in mask_paths:
         mask_rgb = np.array(torchvision_safe_open_rgb(p), dtype=np.uint8)
         mask_old = color_mask_to_id(mask_rgb, color2id, ignore_index)
-        mapped = label_lut[mask_old]
-        valid = mapped != ignore_index
+        valid = mask_old != ignore_index
         if np.any(valid):
-            binc = np.bincount(mapped[valid], minlength=num_classes)
+            binc = np.bincount(mask_old[valid], minlength=num_classes)
             counts += binc[:num_classes]
     return counts
 
@@ -247,29 +268,6 @@ def print_small_object_metrics(metric_name: str, values: Sequence[float], names:
         else:
             msg.append(f"{cls_name}={v:.4f}")
     print(f"[VAL-small] {metric_name}: " + " | ".join(msg))
-
-
-def build_merge_lut(groups_11, ignore_index: int = 255) -> np.ndarray:
-    if len(groups_11) != 11:
-        raise ValueError(f"groups_11 must have length=11, got {len(groups_11)}")
-
-    lut = np.full((256,), fill_value=ignore_index, dtype=np.uint8)
-    used = set()
-
-    for new_id, group in enumerate(groups_11):
-        for old_id in group:
-            old_id = int(old_id)
-            if old_id in used:
-                raise ValueError(f"old_id {old_id} appears in multiple groups")
-            used.add(old_id)
-            lut[old_id] = np.uint8(new_id)
-
-    lut[30] = np.uint8(ignore_index)
-
-    missing = [i for i in range(32) if lut[i] == ignore_index]
-    if missing:
-        print(f"[WARN] these old ids are not assigned (will be ignored): {missing}")
-    return lut
 
 
 def train_one_epoch(
@@ -393,20 +391,13 @@ def main() -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[INFO] device = {device}")
 
-    # 32类颜色表/映射仍用于 RGB->old_id 解码
+    # 32类颜色表/映射用于 RGB->old_id 解码与可视化
     csv_path = cfg.data_root / "class_dict.csv"
     color2id, id2color, id2name = load_class_dict_csv(csv_path)
     assert_camvid_key_old_ids(id2name)
 
-    # 11类分组（按类别名映射为 old_id，避免依赖 csv 行号）
-    GROUPS_11 = build_camvid_11_groups_from_names(id2name)
-
-    label_lut = build_merge_lut(GROUPS_11, ignore_index=cfg.ignore_index)
-    label_lut[30] = np.uint8(cfg.ignore_index)  # Void ignore
-
-    # 11类可视化颜色（每个大类取第一个子类作为代表色）
-    rep_old_ids_11 = [group[0] for group in GROUPS_11]
-    id2color_11 = [id2color[i] for i in rep_old_ids_11]
+    id2color_vis = id2color
+    class_names = [id2name[i] for i in range(cfg.num_classes)]
 
     # outputs
     out = OutputManager(cfg.outputs_root, exp_name="camvid_deeplabv3plus")
@@ -426,24 +417,20 @@ def main() -> None:
         f"auto_contrast={cfg.eval_auto_contrast_enable} cutoff={cfg.eval_auto_contrast_cutoff:.2f}"
     )
 
-    class_names_11 = [
-        "Sky", "Building", "Pole", "Road", "Pavement", "Tree", "SignSymbol", "Fence", "Car", "Pedestrian", "Bicyclist"
-    ]
-
     train_class_pixel_counts = compute_class_pixel_distribution(
         masks_dir=cfg.data_root / "train_labels",
         color2id=color2id,
-        label_lut=label_lut,
         num_classes=cfg.num_classes,
         ignore_index=cfg.ignore_index,
     )
     pixel_ratio = train_class_pixel_counts / np.maximum(train_class_pixel_counts.sum(), 1)
     print("[DATA] train pixel ratios:")
-    for i, name in enumerate(class_names_11):
+    for i, name in enumerate(class_names):
         print(f"  - {name:<10} count={int(train_class_pixel_counts[i]):>10d} ratio={pixel_ratio[i] * 100:6.3f}%")
 
-    for idx in [2, 9, 10]:
-        print(f"[TAIL-CHECK] {class_names_11[idx]} ratio={pixel_ratio[idx] * 100:.3f}%")
+    tail_check_indices = [i for i in [5, 20, 21] if i < cfg.num_classes]
+    for idx in tail_check_indices:
+        print(f"[TAIL-CHECK] {class_names[idx]} ratio={pixel_ratio[idx] * 100:.3f}%")
 
     print(f"[LOSS-PRESET] selected={cfg.loss_preset}")
     if cfg.loss_preset == "baseline":
@@ -532,7 +519,7 @@ def main() -> None:
         resize_h=cfg.resize_h,
         ignore_index=cfg.ignore_index,
         training=True,
-        label_lut=label_lut,
+        label_lut=None,
         train_preprocess=train_preprocess,
         eval_preprocess=eval_preprocess,
     )
@@ -544,7 +531,7 @@ def main() -> None:
         resize_h=cfg.resize_h,
         ignore_index=cfg.ignore_index,
         training=False,
-        label_lut=label_lut,
+        label_lut=None,
         train_preprocess=train_preprocess,
         eval_preprocess=eval_preprocess,
     )
@@ -657,11 +644,11 @@ def main() -> None:
             f" val_mIoU={val_miou:.4f} "
             f" val_BF1={val_metrics['boundary_fscore']:.4f} val_TrimapIoU={val_metrics['trimap_iou']:.4f}  time={dt:.1f}s"
         )
-        small_indices = [2, 9, 10]  # Pole, Pedestrian(Person+Rider), Bicyclist
-        print_small_object_metrics("IoU", val_metrics["iou_per_class"], class_names_11, small_indices)
-        print_small_object_metrics("Recall", val_metrics["recall_per_class"], class_names_11, small_indices)
+        small_indices = [i for i in [5, 20, 21] if i < cfg.num_classes]
+        print_small_object_metrics("IoU", val_metrics["iou_per_class"], class_names, small_indices)
+        print_small_object_metrics("Recall", val_metrics["recall_per_class"], class_names, small_indices)
         if cfg.use_class_balanced_ce:
-            print_small_object_metrics("Precision", val_metrics["precision_per_class"], class_names_11, small_indices)
+            print_small_object_metrics("Precision", val_metrics["precision_per_class"], class_names, small_indices)
         if hasattr(train_ds, "consume_aug_stats"):
             aug_stats = train_ds.consume_aug_stats()
             print(
@@ -703,7 +690,7 @@ def main() -> None:
                 val_loader=val_loader,
                 device=device,
                 out_dir=out.vis_dir,
-                id2color=id2color_11,
+                id2color=id2color_vis,
                 ignore_index=cfg.ignore_index,
                 epoch=epoch,
                 max_items=cfg.save_vis_max_items,
