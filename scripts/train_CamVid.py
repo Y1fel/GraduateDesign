@@ -7,7 +7,6 @@ from typing import Sequence
 
 import numpy as np
 import torch
-from torch.amp import autocast, GradScaler
 from torch.utils.data import DataLoader
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -210,7 +209,6 @@ def train_one_epoch(
     optimizer,
     criterion,
     device,
-    scaler: GradScaler | None,
     epoch: int,
     total_iters: int,
     base_lr: float,
@@ -218,8 +216,6 @@ def train_one_epoch(
 ) -> dict[str, float]:
     model.train()
     total_loss, total_ce, total_dice, n = 0.0, 0.0, 0.0, 0
-
-    use_amp = (device.type == "cuda") and (scaler is not None)
 
     for it, (imgs, masks, _names) in enumerate(loader):
         global_step = (epoch - 1) * len(loader) + it
@@ -232,20 +228,11 @@ def train_one_epoch(
 
         optimizer.zero_grad(set_to_none=True)
 
-        if use_amp:
-            with autocast(device_type="cuda", dtype=torch.float16):
-                logits = model(imgs)
-                loss_parts = criterion.forward_components(logits, masks)
-                loss = loss_parts["total"]
-            scaler.scale(loss).backward()
-            scaler.step(optimizer)
-            scaler.update()
-        else:
-            logits = model(imgs)
-            loss_parts = criterion.forward_components(logits, masks)
-            loss = loss_parts["total"]
-            loss.backward()
-            optimizer.step()
+        logits = model(imgs)
+        loss_parts = criterion.forward_components(logits, masks)
+        loss = loss_parts["total"]
+        loss.backward()
+        optimizer.step()
 
         bs = imgs.size(0)
         total_loss += loss.item() * bs
@@ -262,7 +249,7 @@ def train_one_epoch(
 
 
 @torch.inference_mode()
-def evaluate_loss(model, loader, criterion, device, use_amp: bool = True) -> dict[str, float]:
+def evaluate_loss(model, loader, criterion, device) -> dict[str, float]:
     model.eval()
     total_loss = 0.0
     total_ce = 0.0
@@ -273,13 +260,8 @@ def evaluate_loss(model, loader, criterion, device, use_amp: bool = True) -> dic
         imgs = imgs.to(device, non_blocking=True)
         masks = masks.to(device, non_blocking=True)
 
-        if use_amp and device.type == "cuda":
-            with autocast(device_type="cuda", dtype=torch.float16):
-                logits = model(imgs)
-                loss_parts = criterion.forward_components(logits, masks)
-        else:
-            logits = model(imgs)
-            loss_parts = criterion.forward_components(logits, masks)
+        logits = model(imgs)
+        loss_parts = criterion.forward_components(logits, masks)
 
         bs = imgs.size(0)
         total_loss += loss_parts["total"].item() * bs
@@ -338,7 +320,6 @@ def main() -> None:
     set_seed(cfg.seed)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    scaler = GradScaler(enabled=(device.type == "cuda"))
     print(f"[INFO] device = {device}")
 
     # 32类颜色表/映射仍用于 RGB->old_id 解码
@@ -535,12 +516,11 @@ def main() -> None:
             optimizer,
             criterion,
             device,
-            scaler,
             epoch=epoch,
             total_iters=total_iters,
             base_lr=cfg.lr_0,
         )
-        val_loss_parts = evaluate_loss(model, val_loader, criterion, device, use_amp=(device.type == "cuda"))
+        val_loss_parts = evaluate_loss(model, val_loader, criterion, device)
         train_loss = train_loss_parts["total"]
         val_loss = val_loss_parts["total"]
         val_metrics = compute_segmentation_metrics(model, val_loader, device, cfg.num_classes, cfg.ignore_index)
