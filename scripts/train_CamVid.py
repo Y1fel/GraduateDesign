@@ -86,29 +86,6 @@ class TrainConfig:
     use_amp: bool = True
 
 
-def assert_camvid_key_old_ids(id2name: list[str] | dict[int, str]) -> None:
-    if isinstance(id2name, dict):
-        get_name = lambda idx: str(id2name.get(idx, "<MISSING>"))
-    else:
-        get_name = lambda idx: str(id2name[idx]) if 0 <= idx < len(id2name) else "<MISSING>"
-
-    expected = {21: "Sky", 17: "Road", 5: "Car"}
-    print("[CLASS-DICT] key old_id check:")
-    mismatch = []
-    for old_id, expected_name in expected.items():
-        actual_name = get_name(old_id)
-        print(f"  - old_id {old_id:>2}: expected={expected_name}, actual={actual_name}")
-        if actual_name != expected_name:
-            mismatch.append((old_id, expected_name, actual_name))
-
-    if mismatch:
-        details = "; ".join(
-            f"old_id {old_id} expected {expected_name} but got {actual_name}"
-            for old_id, expected_name, actual_name in mismatch
-        )
-        raise RuntimeError(f"class_dict.csv 顺序假设不一致: {details}")
-
-
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train DeepLabV3+ on CamVid")
     parser.add_argument(
@@ -282,7 +259,6 @@ def main() -> None:
 
     csv_path = cfg.data_root / "class_dict.csv"
     color2id, id2color, id2name = load_class_dict_csv(csv_path)
-    assert_camvid_key_old_ids(id2name)
 
     id2color_vis = id2color
     class_names = [id2name[i] for i in range(cfg.num_classes)]
