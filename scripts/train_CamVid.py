@@ -1,5 +1,4 @@
 import math
-import argparse
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -38,7 +37,6 @@ class TrainConfig:
     output_stride: int = 8
     backbone_pretrained: bool = True
     head_norm: str = "bn"
-    use_mid_level_fusion: bool = True
 
     resize_h: int = 720
     resize_w: int = 960
@@ -70,6 +68,7 @@ class TrainConfig:
 
     train_low_light_preprocess_enable: bool = True
     eval_low_light_preprocess_enable: bool = False
+    sync_eval_tone_with_train: bool = False
     low_light_gamma: float = 0.85
     low_light_brightness_gain: float = 1.10
 
@@ -84,55 +83,6 @@ class TrainConfig:
     outputs_root: Path = PROJECT_ROOT / "outputs"
     seed: int = 42
     use_amp: bool = True
-
-
-def assert_camvid_key_old_ids(id2name: list[str] | dict[int, str]) -> None:
-    if isinstance(id2name, dict):
-        get_name = lambda idx: str(id2name.get(idx, "<MISSING>"))
-    else:
-        get_name = lambda idx: str(id2name[idx]) if 0 <= idx < len(id2name) else "<MISSING>"
-
-    expected = {21: "Sky", 17: "Road", 5: "Car"}
-    print("[CLASS-DICT] key old_id check:")
-    mismatch = []
-    for old_id, expected_name in expected.items():
-        actual_name = get_name(old_id)
-        print(f"  - old_id {old_id:>2}: expected={expected_name}, actual={actual_name}")
-        if actual_name != expected_name:
-            mismatch.append((old_id, expected_name, actual_name))
-
-    if mismatch:
-        details = "; ".join(
-            f"old_id {old_id} expected {expected_name} but got {actual_name}"
-            for old_id, expected_name, actual_name in mismatch
-        )
-        raise RuntimeError(f"class_dict.csv 顺序假设不一致: {details}")
-
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Train DeepLabV3+ on CamVid")
-    parser.add_argument(
-        "--ablation_variant",
-        type=str,
-        default=None,
-        choices=["A", "B", "C"],
-        help="A=baseline, B=disable blur/jpeg, C=disable mid-level fusion.",
-    )
-    return parser.parse_args()
-
-
-def apply_ablation_variant(cfg: TrainConfig, variant: str) -> None:
-    v = variant.upper()
-    if v == "A":
-        return
-    if v == "B":
-        cfg.blur_prob = 0.0
-        cfg.jpeg_prob = 0.0
-        return
-    if v == "C":
-        cfg.use_mid_level_fusion = False
-        return
-    raise ValueError(f"Unsupported ablation variant: {variant}")
 
 
 def resolve_effective_tone_aug(cfg: TrainConfig) -> dict[str, float]:
@@ -158,6 +108,16 @@ def resolve_effective_tone_aug(cfg: TrainConfig) -> dict[str, float]:
         )
 
     return effective
+
+
+def summarize_tone_cfg(prefix: str, cfg: dict) -> str:
+    return (
+        f"[{prefix}] auto_contrast={bool(cfg['auto_contrast'])} "
+        f"cutoff={float(cfg['auto_contrast_cutoff']):.2f} "
+        f"low_light={bool(cfg['low_light_preprocess_enable'])} "
+        f"gamma={float(cfg['low_light_gamma']):.2f} "
+        f"brightness_gain={float(cfg['low_light_brightness_gain']):.2f}"
+    )
 
 
 def print_small_object_metrics(metric_name: str, values: Sequence[float], names: Sequence[str], indices: Sequence[int]) -> None:
@@ -269,10 +229,7 @@ def save_vis_using_best_ckpt(
 
 
 def main() -> None:
-    args = parse_args()
     cfg = TrainConfig()
-    if args.ablation_variant is not None:
-        apply_ablation_variant(cfg, args.ablation_variant)
     set_seed(cfg.seed)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -282,7 +239,6 @@ def main() -> None:
 
     csv_path = cfg.data_root / "class_dict.csv"
     color2id, id2color, id2name = load_class_dict_csv(csv_path)
-    assert_camvid_key_old_ids(id2name)
 
     id2color_vis = id2color
     class_names = [id2name[i] for i in range(cfg.num_classes)]
@@ -314,13 +270,22 @@ def main() -> None:
         "low_light_gamma": cfg.low_light_gamma,
         "low_light_brightness_gain": cfg.low_light_brightness_gain,
     }
-    eval_preprocess = {
-        "auto_contrast": cfg.eval_auto_contrast_enable,
-        "auto_contrast_cutoff": cfg.eval_auto_contrast_cutoff,
-        "low_light_preprocess_enable": cfg.eval_low_light_preprocess_enable,
-        "low_light_gamma": cfg.low_light_gamma,
-        "low_light_brightness_gain": cfg.low_light_brightness_gain,
-    }
+    if cfg.sync_eval_tone_with_train:
+        eval_preprocess = {
+            "auto_contrast": cfg.train_auto_contrast_enable,
+            "auto_contrast_cutoff": cfg.train_auto_contrast_cutoff,
+            "low_light_preprocess_enable": cfg.train_low_light_preprocess_enable,
+            "low_light_gamma": cfg.low_light_gamma,
+            "low_light_brightness_gain": cfg.low_light_brightness_gain,
+        }
+    else:
+        eval_preprocess = {
+            "auto_contrast": cfg.eval_auto_contrast_enable,
+            "auto_contrast_cutoff": cfg.eval_auto_contrast_cutoff,
+            "low_light_preprocess_enable": cfg.eval_low_light_preprocess_enable,
+            "low_light_gamma": cfg.low_light_gamma,
+            "low_light_brightness_gain": cfg.low_light_brightness_gain,
+        }
 
     train_ds = CamVidFolderDataset(
         root=cfg.data_root,
@@ -369,7 +334,6 @@ def main() -> None:
         backbone_pretrained=cfg.backbone_pretrained,
         output_stride=cfg.output_stride,
         head_norm=cfg.head_norm,
-        use_mid_level_fusion=cfg.use_mid_level_fusion,
     ).to(device)
 
     criterion = torch.nn.CrossEntropyLoss(
@@ -402,6 +366,14 @@ def main() -> None:
                 aug_scale = 1.0
             train_ds.set_photo_aug_scale(aug_scale)
             print(f"[AUG] photo_aug_prob={train_ds.photo_aug_prob_current:.3f} (scale={aug_scale:.2f})")
+
+        print(
+            "[TONE] "
+            + summarize_tone_cfg("train", train_preprocess)
+            + " | "
+            + summarize_tone_cfg("eval", eval_preprocess)
+            + f" | sync_eval_tone_with_train={cfg.sync_eval_tone_with_train}"
+        )
 
         train_loss = train_one_epoch(
             model,
