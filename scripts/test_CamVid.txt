@@ -1,7 +1,4 @@
-python scripts/test_camvid.py --data_root D:\MachineLearning\GraduateDesign\data\archive\CamVid --ckpt D:\...\checkpoints\best.pth
+python scripts/train_Cityscapes.py
 
-
-python -m scripts.test_CamVid --data_root D:\MachineLearning\GraduateDesign\data\archive\CamVid --ckpt D:\MachineLearning\GraduateDesign\outputs\camvid_deeplabv3plus_20260217_201033
-
-python scripts/test_camvid.py --data_root D:\...\CamVid --ckpt D:\...\best.pth
-
+# 或者继续使用兼容入口
+python -m scripts.train_CamVid

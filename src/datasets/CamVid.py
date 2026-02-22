@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Dict, Tuple, Optional, Any
+from typing import Any, Dict, Optional
 
 import numpy as np
 import torch
@@ -7,15 +7,12 @@ from PIL import Image
 from torch.utils.data import Dataset
 
 from src.datasets.transforms import (
-    resize_pair,
-    random_scale_pair,
     maybe_hflip_pair,
     pil_to_tensor,
+    random_scale_pair,
+    resize_pair,
     normalize_img,
 )
-from src.utils.Id2Mask import color_mask_to_id
-
-RGB = Tuple[int, int, int]
 
 
 def _build_default_train_preprocess() -> Dict[str, Any]:
@@ -30,17 +27,27 @@ def _build_default_eval_preprocess() -> Dict[str, Any]:
     return {}
 
 
-class CamVidFolderDataset(Dataset):
+class CityscapesDataset(Dataset):
+    """Cityscapes loader based on official folder layout.
+
+    Expected root structure:
+      root/
+        leftImg8bit/{train,val,test}/<city>/*_leftImg8bit.png
+        gtFine/{train,val}/<city>/*_gtFine_labelTrainIds.png
+
+    Note:
+      - split=test has no public gt labels, so training/eval should use train/val.
+      - masks are single-channel trainId maps in [0,18] with ignored pixels usually 255.
+    """
+
     def __init__(
         self,
         root: Path,
         split: str,
-        color2id: Dict[RGB, int],
         resize_w: int,
         resize_h: int,
         ignore_index: int,
         training: bool,
-        label_lut: Optional[np.ndarray] = None,  # shape (256,), old_id -> new_id or ignore
         train_preprocess: Optional[Dict[str, Any]] = None,
         eval_preprocess: Optional[Dict[str, Any]] = None,
     ) -> None:
@@ -48,7 +55,6 @@ class CamVidFolderDataset(Dataset):
 
         self.root = Path(root)
         self.split = split
-        self.color2id = color2id
         self.resize_w = int(resize_w)
         self.resize_h = int(resize_h)
         self.ignore_index = int(ignore_index)
@@ -72,82 +78,53 @@ class CamVidFolderDataset(Dataset):
         )
         self.random_crop_size = self.train_preprocess["random_crop_size"]
 
+        self.images_root = self.root / "leftImg8bit" / split
+        self.labels_root = self.root / "gtFine" / split
 
-        if label_lut is not None:
-            lut = np.asarray(label_lut)
-            if lut.shape != (256,):
-                raise ValueError(f"label_lut must have shape (256,), got {lut.shape}")
-            # 用 uint8 存，后面映射时保持 0..K-1 或 255
-            self.label_lut = lut.astype(np.uint8, copy=False)
-        else:
-            self.label_lut = None
+        if not self.images_root.exists():
+            raise FileNotFoundError(f"Images dir not found: {self.images_root}")
+        if split != "test" and not self.labels_root.exists():
+            raise FileNotFoundError(f"Labels dir not found: {self.labels_root}")
 
-        self.train_images_dir = self.root / "train"
-        self.train_masks_dir = self.root / "train_labels"
-        self.val_images_dir = self.root / "val"
-        self.val_masks_dir = self.root / "val_labels"
-        self.test_images_dir = self.root / "test"
-        self.test_masks_dir = self.root / "test_labels"
-
-        if split == "train":
-            self.images_dir, self.masks_dir = self.train_images_dir, self.train_masks_dir
-        elif split == "val":
-            self.images_dir, self.masks_dir = self.val_images_dir, self.val_masks_dir
-        else:
-            self.images_dir, self.masks_dir = self.test_images_dir, self.test_masks_dir
-
-        if not self.images_dir.exists():
-            raise FileNotFoundError(f"Images dir not found: {self.images_dir}")
-        if not self.masks_dir.exists():
-            raise FileNotFoundError(f"Masks dir not found: {self.masks_dir}")
-
-        exts = {".png", ".jpg", ".jpeg", ".bmp"}
-        self.img_paths = sorted([p for p in self.images_dir.iterdir() if p.suffix.lower() in exts])
-
+        self.img_paths = sorted(self.images_root.glob("*/*_leftImg8bit.png"))
         if not self.img_paths:
-            raise RuntimeError(f"No images found in {self.images_dir}")
+            raise RuntimeError(f"No Cityscapes images found in {self.images_root}")
 
     def __len__(self) -> int:
         return len(self.img_paths)
 
     def _resolve_mask(self, img_path: Path) -> Path:
-        # 1) 同名
-        p1 = self.masks_dir / img_path.name
-        if p1.exists():
-            return p1
+        if self.split == "test":
+            raise RuntimeError("Cityscapes test split has no public labels.")
 
-        # 2) 常见命名：xxx_L.png
-        p2 = self.masks_dir / f"{img_path.stem}_L{img_path.suffix}"
-        if p2.exists():
-            return p2
-
-        # 3) 任意扩展名
-        cand = list(self.masks_dir.glob(f"{img_path.stem}.*"))
-        if cand:
-            return cand[0]
-
-        raise FileNotFoundError(f"Mask not found for {img_path.name} in {self.masks_dir}")
+        city = img_path.parent.name
+        stem = img_path.name.replace("_leftImg8bit.png", "")
+        mask_path = self.labels_root / city / f"{stem}_gtFine_labelTrainIds.png"
+        if not mask_path.exists():
+            raise FileNotFoundError(f"Mask not found for {img_path.name}: {mask_path}")
+        return mask_path
 
     def __getitem__(self, idx: int):
         img_path = self.img_paths[idx]
-        mask_path = self._resolve_mask(img_path)
 
         img = Image.open(img_path).convert("RGB")
-        mask_rgb = Image.open(mask_path).convert("RGB")
+        if self.split == "test":
+            mask_id = Image.fromarray(
+                np.full((img.height, img.width), fill_value=self.ignore_index, dtype=np.uint8),
+                mode="L",
+            )
+        else:
+            mask_path = self._resolve_mask(img_path)
+            mask_id = Image.open(mask_path).convert("L")
 
-        img, mask_rgb = resize_pair(img, mask_rgb, (self.resize_w, self.resize_h))
+        img, mask_id = resize_pair(img, mask_id, (self.resize_w, self.resize_h))
 
         if self.training:
             if self.multi_scale_range != (1.0, 1.0):
-                img, mask_rgb = random_scale_pair(img, mask_rgb, self.multi_scale_range)
-            img, mask_rgb = maybe_hflip_pair(img, mask_rgb, self.hflip_prob)
+                img, mask_id = random_scale_pair(img, mask_id, self.multi_scale_range)
+            img, mask_id = maybe_hflip_pair(img, mask_id, self.hflip_prob)
 
-        mask_old = color_mask_to_id(mask_rgb, self.color2id, self.ignore_index)
-
-        if self.label_lut is not None:
-            mask_new = self.label_lut[mask_old]
-        else:
-            mask_new = mask_old
+        mask_new = np.asarray(mask_id, dtype=np.uint8)
 
         if self.training and self.random_crop_size is not None:
             crop_w, crop_h = int(self.random_crop_size[0]), int(self.random_crop_size[1])
@@ -174,7 +151,12 @@ class CamVidFolderDataset(Dataset):
 
         img_t = pil_to_tensor(img)
         img_t = normalize_img(img_t)
+        mask_t = torch.from_numpy(mask_new.astype(np.int64))
 
-        mask_t = torch.from_numpy(mask_new.astype(np.int64))  # long for CE
+        # include city in name to avoid collisions in visualization outputs
+        rel_name = str(img_path.relative_to(self.images_root))
+        return img_t, mask_t, rel_name
 
-        return img_t, mask_t, img_path.name
+
+# backward compatibility alias
+CamVidFolderDataset = CityscapesDataset

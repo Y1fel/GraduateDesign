@@ -8,10 +8,10 @@ import torch.nn as nn
 
 from src.commom.output_manager import OutputManager
 from src.commom.repro import set_seed
-from src.datasets.CamVid import CamVidFolderDataset
+from src.datasets.CamVid import CityscapesDataset
 from src.eval.mIoU import compute_segmentation_metrics
 from src.models.deeplabv3_plus import DeepLabV3Plus
-from src.utils.Id2Mask import load_class_dict_csv
+from src.datasets.cityscapes_labels import CITYSCAPES_19_CLASS_NAMES, CITYSCAPES_19_ID2COLOR
 from src.viz.visualizer import save_predictions_triplet
 from config.config import TrainConfig
 
@@ -130,12 +130,10 @@ def main() -> None:
     amp_enabled = bool(cfg.use_amp and device.type == "cuda")
     print(f"[INFO] AMP enabled = {amp_enabled}")
 
-    csv_path = cfg.data_root / "class_dict.csv"
-    color2id, id2color, id2name = load_class_dict_csv(csv_path)
+    id2name = {idx: name for idx, name in enumerate(CITYSCAPES_19_CLASS_NAMES)}
+    id2color_vis = CITYSCAPES_19_ID2COLOR
 
-    id2color_vis = id2color
-
-    out = OutputManager(cfg.outputs_root, exp_name="camvid_deeplabv3plus")
+    out = OutputManager(cfg.outputs_root, exp_name="cityscapes_deeplabv3plus")
     out.save_config(cfg)
     out.init_metrics()
     print(f"[INFO] run_dir = {out.run_dir}")
@@ -147,27 +145,23 @@ def main() -> None:
     }
     eval_preprocess = {}
 
-    train_ds = CamVidFolderDataset(
+    train_ds = CityscapesDataset(
         root=cfg.data_root,
         split="train",
-        color2id=color2id,
         resize_w=cfg.resize_w,
         resize_h=cfg.resize_h,
         ignore_index=cfg.ignore_index,
         training=True,
-        label_lut=None,
         train_preprocess=train_preprocess,
         eval_preprocess=eval_preprocess,
     )
-    val_ds = CamVidFolderDataset(
+    val_ds = CityscapesDataset(
         root=cfg.data_root,
         split="val",
-        color2id=color2id,
         resize_w=cfg.resize_w,
         resize_h=cfg.resize_h,
         ignore_index=cfg.ignore_index,
         training=False,
-        label_lut=None,
         train_preprocess=train_preprocess,
         eval_preprocess=eval_preprocess,
     )
