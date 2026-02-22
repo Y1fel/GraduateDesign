@@ -8,7 +8,7 @@ import torch.nn as nn
 
 from src.commom.output_manager import OutputManager
 from src.commom.repro import set_seed
-from src.datasets.CamVid import CityscapesDataset
+from src.datasets.cityscapes import CityscapesDataset
 from src.eval.mIoU import compute_segmentation_metrics
 from src.models.deeplabv3_plus import DeepLabV3Plus
 from src.datasets.cityscapes_labels import CITYSCAPES_19_CLASS_NAMES, CITYSCAPES_19_ID2COLOR
@@ -189,22 +189,6 @@ def main() -> None:
         output_stride=cfg.output_stride,
         head_norm=cfg.head_norm,
     ).to(device)
-
-    print("====== 检查 backbone 是否加载预训练 ======")
-
-    # 假设 model.encoder 是 backbone（如果你是 model.backbone 自己改一下）
-    backbone = model.backbone
-
-    # 找到第一层卷积
-    first_conv = None
-    for m in backbone.modules():
-        if isinstance(m, nn.Conv2d):
-            first_conv = m
-            break
-
-    w = first_conv.weight.data
-    print("conv1 weight mean:", w.mean().item())
-    print("conv1 weight std :", w.std().item())
 
     criterion = torch.nn.CrossEntropyLoss(
         ignore_index=cfg.ignore_index,

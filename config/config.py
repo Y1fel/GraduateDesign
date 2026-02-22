@@ -28,7 +28,7 @@ class TrainConfig:
     resize_h: int = 512
     resize_w: int = 1024
     crop_h: int = 512
-    crop_w: int = 1024
+    crop_w: int = 512
     train_multi_scale_min: float = 1.0
     train_multi_scale_max: float = 1.0
     hflip_prob: float = 0.5
