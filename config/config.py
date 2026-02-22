@@ -55,14 +55,8 @@ class TrainConfig:
 
     train_low_light_preprocess_enable: bool = False
     eval_low_light_preprocess_enable: bool = False
-    sync_eval_tone_with_train: bool = True
     low_light_gamma: float = 0.85
     low_light_brightness_gain: float = 1.10
-
-    avoid_overstrong_tone_ops: bool = True
-    photo_aug_prob_cap_when_tone_stack: float = 0.20
-    photo_op_prob_cap_when_tone_stack: float = 0.35
-    jitter_scale_when_tone_stack: float = 0.7
 
     save_vis_every: int = 50
     save_vis_max_items: int = 8
