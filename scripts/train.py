@@ -138,13 +138,6 @@ def main() -> None:
     out.init_metrics()
     print(f"[INFO] run_dir = {out.run_dir}")
 
-    train_preprocess = {
-        "hflip_prob": cfg.hflip_prob,
-        "multi_scale_range": (cfg.train_multi_scale_min, cfg.train_multi_scale_max),
-        "random_crop_size": None,
-    }
-    eval_preprocess = {}
-
     train_ds = CityscapesDataset(
         root=cfg.data_root,
         split="train",
@@ -152,8 +145,9 @@ def main() -> None:
         resize_h=cfg.resize_h,
         ignore_index=cfg.ignore_index,
         training=True,
-        train_preprocess=train_preprocess,
-        eval_preprocess=eval_preprocess,
+        hflip_prob=cfg.hflip_prob,
+        multi_scale_range=(cfg.train_multi_scale_min, cfg.train_multi_scale_max),
+        random_crop_size=(cfg.crop_w, cfg.crop_h),
     )
     val_ds = CityscapesDataset(
         root=cfg.data_root,
@@ -162,8 +156,6 @@ def main() -> None:
         resize_h=cfg.resize_h,
         ignore_index=cfg.ignore_index,
         training=False,
-        train_preprocess=train_preprocess,
-        eval_preprocess=eval_preprocess,
     )
 
     train_loader = DataLoader(
