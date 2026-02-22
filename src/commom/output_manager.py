@@ -19,6 +19,7 @@ class OutputManager:
         self.log_dir.mkdir(parents=True, exist_ok=True)
 
         self.metrics_csv = self.log_dir / "metrics.csv"
+        self.per_class_metrics_csv = self.log_dir / "per_class_metrics.csv"
         self.config_json = self.run_dir / "config.json"
 
     def save_config(self, cfg: Any) -> None:
@@ -29,24 +30,30 @@ class OutputManager:
 
     def init_metrics(self) -> None:
         if self.metrics_csv.exists():
-            return
-        with self.metrics_csv.open("w", newline="", encoding="utf-8") as f:
-            w = csv.writer(f)
-            w.writerow(
-                [
-                    "epoch",
-                    "train_loss",
-                    "val_loss",
-                    "val_miou",
-                    "val_bf1",
-                    "time_sec",
-                    "sync_eval_tone_with_train",
-                    "train_auto_contrast_enable",
-                    "train_low_light_preprocess_enable",
-                    "low_light_gamma",
-                    "low_light_brightness_gain",
-                ]
-            )
+            pass
+        else:
+            with self.metrics_csv.open("w", newline="", encoding="utf-8") as f:
+                w = csv.writer(f)
+                w.writerow(
+                    [
+                        "epoch",
+                        "train_loss",
+                        "val_loss",
+                        "val_miou",
+                        "val_bf1",
+                        "time_sec",
+                        "sync_eval_tone_with_train",
+                        "train_auto_contrast_enable",
+                        "train_low_light_preprocess_enable",
+                        "low_light_gamma",
+                        "low_light_brightness_gain",
+                    ]
+                )
+
+        if not self.per_class_metrics_csv.exists():
+            with self.per_class_metrics_csv.open("w", newline="", encoding="utf-8") as f:
+                w = csv.writer(f)
+                w.writerow(["epoch", "class_id", "class_name", "iou", "precision", "recall"])
 
     def append_metrics(
         self,
@@ -77,5 +84,27 @@ class OutputManager:
                     str(train_low_light_preprocess_enable),
                     f"{low_light_gamma:.4f}",
                     f"{low_light_brightness_gain:.4f}",
+                ]
+            )
+
+    def append_per_class_metrics(
+        self,
+        epoch: int,
+        class_id: int,
+        class_name: str,
+        iou: float,
+        precision: float,
+        recall: float,
+    ) -> None:
+        with self.per_class_metrics_csv.open("a", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow(
+                [
+                    epoch,
+                    class_id,
+                    class_name,
+                    f"{iou:.6f}",
+                    f"{precision:.6f}",
+                    f"{recall:.6f}",
                 ]
             )
