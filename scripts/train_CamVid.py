@@ -23,40 +23,6 @@ def freeze_bn(model):
             m.weight.requires_grad = False
             m.bias.requires_grad = False
 
-def resolve_effective_tone_aug(cfg: TrainConfig) -> dict[str, float]:
-    effective = {
-        "photo_aug_prob": float(cfg.photo_aug_prob),
-        "photo_op_prob": float(cfg.photo_op_prob),
-        "brightness_jitter": float(cfg.brightness_jitter),
-        "contrast_jitter": float(cfg.contrast_jitter),
-        "saturation_jitter": float(cfg.saturation_jitter),
-    }
-
-    if cfg.avoid_overstrong_tone_ops and cfg.train_low_light_preprocess_enable and cfg.train_auto_contrast_enable:
-        scale = max(0.0, min(1.0, float(cfg.jitter_scale_when_tone_stack)))
-        effective["photo_aug_prob"] = min(effective["photo_aug_prob"], float(cfg.photo_aug_prob_cap_when_tone_stack))
-        effective["photo_op_prob"] = min(effective["photo_op_prob"], float(cfg.photo_op_prob_cap_when_tone_stack))
-        effective["brightness_jitter"] *= scale
-        effective["contrast_jitter"] *= scale
-        effective["saturation_jitter"] *= scale
-        print(
-            "[AUG-TONE] low_light + auto_contrast + photometric stack detected; "
-            f"scaled photo_aug_prob={effective['photo_aug_prob']:.3f}, "
-            f"photo_op_prob={effective['photo_op_prob']:.3f}, jitter_scale={scale:.2f}"
-        )
-
-    return effective
-
-
-def summarize_tone_cfg(prefix: str, cfg: dict) -> str:
-    return (
-        f"[{prefix}] auto_contrast={bool(cfg['auto_contrast'])} "
-        f"cutoff={float(cfg['auto_contrast_cutoff']):.2f} "
-        f"low_light={bool(cfg['low_light_preprocess_enable'])} "
-        f"gamma={float(cfg['low_light_gamma']):.2f} "
-        f"brightness_gain={float(cfg['low_light_brightness_gain']):.2f}"
-    )
-
 def train_one_epoch(
     model,
     loader,
@@ -184,16 +150,14 @@ def main() -> None:
     out.init_metrics()
     print(f"[INFO] run_dir = {out.run_dir}")
 
-    tone_aug = resolve_effective_tone_aug(cfg)
-
     train_preprocess = {
         "hflip_prob": cfg.hflip_prob,
-        "photo_aug_prob": tone_aug["photo_aug_prob"],
-        "brightness_jitter": tone_aug["brightness_jitter"],
-        "contrast_jitter": tone_aug["contrast_jitter"],
-        "saturation_jitter": tone_aug["saturation_jitter"],
+        "photo_aug_prob": cfg.photo_aug_prob,
+        "brightness_jitter": cfg.brightness_jitter,
+        "contrast_jitter": cfg.contrast_jitter,
+        "saturation_jitter": cfg.saturation_jitter,
         "gamma_range": (cfg.gamma_min, cfg.gamma_max),
-        "photo_op_prob": tone_aug["photo_op_prob"],
+        "photo_op_prob": cfg.photo_op_prob,
         "blur_prob": cfg.blur_prob,
         "blur_radius_range": (cfg.blur_radius_min, cfg.blur_radius_max),
         "jpeg_prob": cfg.jpeg_prob,
@@ -206,31 +170,13 @@ def main() -> None:
         "low_light_gamma": cfg.low_light_gamma,
         "low_light_brightness_gain": cfg.low_light_brightness_gain,
     }
-    tone_on_eval_preprocess = build_eval_preprocess(
-        auto_contrast=cfg.train_auto_contrast_enable,
-        auto_contrast_cutoff=cfg.train_auto_contrast_cutoff,
-        low_light=cfg.train_low_light_preprocess_enable,
-        gamma=cfg.low_light_gamma,
-        brightness_gain=cfg.low_light_brightness_gain,
-    )
-    tone_off_eval_preprocess = build_eval_preprocess(
-        auto_contrast=False,
+    eval_preprocess = build_eval_preprocess(
+        auto_contrast=cfg.eval_auto_contrast_enable,
         auto_contrast_cutoff=cfg.eval_auto_contrast_cutoff,
-        low_light=False,
+        low_light=cfg.eval_low_light_preprocess_enable,
         gamma=cfg.low_light_gamma,
         brightness_gain=cfg.low_light_brightness_gain,
     )
-
-    if cfg.sync_eval_tone_with_train:
-        eval_preprocess = tone_on_eval_preprocess
-    else:
-        eval_preprocess = build_eval_preprocess(
-            auto_contrast=cfg.eval_auto_contrast_enable,
-            auto_contrast_cutoff=cfg.eval_auto_contrast_cutoff,
-            low_light=cfg.eval_low_light_preprocess_enable,
-            gamma=cfg.low_light_gamma,
-            brightness_gain=cfg.low_light_brightness_gain,
-        )
 
     train_ds = CamVidFolderDataset(
         root=cfg.data_root,
@@ -328,14 +274,6 @@ def main() -> None:
             train_ds.set_photo_aug_scale(aug_scale)
             print(f"[AUG] photo_aug_prob={train_ds.photo_aug_prob_current:.3f} (scale={aug_scale:.2f})")
 
-        print(
-            "[TONE] "
-            + summarize_tone_cfg("train", train_preprocess)
-            + " | "
-            + summarize_tone_cfg("eval", eval_preprocess)
-            + f" | sync_eval_tone_with_train={cfg.sync_eval_tone_with_train}"
-        )
-
         train_loss = train_one_epoch(
             model,
             train_loader,
@@ -403,7 +341,6 @@ def main() -> None:
             val_miou=val_miou,
             val_bf1=float(val_metrics["boundary_fscore"]),
             dt=dt,
-            sync_eval_tone_with_train=cfg.sync_eval_tone_with_train,
             train_auto_contrast_enable=cfg.train_auto_contrast_enable,
             train_low_light_preprocess_enable=cfg.train_low_light_preprocess_enable,
             low_light_gamma=cfg.low_light_gamma,
@@ -457,61 +394,6 @@ def main() -> None:
         cur_lr = optimizer.param_groups[0]["lr"]
         print(f"... lr={cur_lr:.6f}")
 
-    best_ckpt_path = out.ckpt_dir / "best.pth"
-    if best_ckpt_path.exists():
-        print("[TONE-ABLATION] Evaluating best checkpoint with tone on/off val pipeline...")
-        ckpt = torch.load(best_ckpt_path, map_location="cpu")
-        state = ckpt["model_state"] if isinstance(ckpt, dict) and "model_state" in ckpt else ckpt
-        model.load_state_dict(state, strict=True)
-
-        tone_eval_settings = {
-            "tone_on": tone_on_eval_preprocess,
-            "tone_off": tone_off_eval_preprocess,
-        }
-        compare_lines = ["setting,miou,bf1,trimap_iou"]
-        for setting_name, setting in tone_eval_settings.items():
-            eval_ds_cmp = CamVidFolderDataset(
-                root=cfg.data_root,
-                split="val",
-                color2id=color2id,
-                resize_w=cfg.resize_w,
-                resize_h=cfg.resize_h,
-                ignore_index=cfg.ignore_index,
-                training=False,
-                label_lut=None,
-                train_preprocess=train_preprocess,
-                eval_preprocess=setting,
-            )
-            eval_loader_cmp = DataLoader(
-                eval_ds_cmp,
-                batch_size=cfg.batch_size,
-                shuffle=False,
-                num_workers=cfg.num_workers,
-                pin_memory=(device.type == "cuda"),
-                drop_last=False,
-            )
-            cmp_metrics = compute_segmentation_metrics(model, eval_loader_cmp, device, cfg.num_classes, cfg.ignore_index)
-            print(
-                f"[TONE-ABLATION] {setting_name} -> "
-                f"mIoU={cmp_metrics['miou']:.4f} BF1={cmp_metrics['boundary_fscore']:.4f} "
-                f"TrimapIoU={cmp_metrics['trimap_iou']:.4f} "
-                f"({summarize_tone_cfg(setting_name, setting)})"
-            )
-            compare_lines.append(
-                f"{setting_name},{cmp_metrics['miou']:.6f},{cmp_metrics['boundary_fscore']:.6f},{cmp_metrics['trimap_iou']:.6f}"
-            )
-            save_predictions_triplet(
-                model=model,
-                loader=eval_loader_cmp,
-                device=device,
-                out_dir=out.vis_dir / "tone_ablation" / setting_name,
-                id2color=id2color_vis,
-                ignore_index=cfg.ignore_index,
-                epoch=cfg.epochs,
-                max_items=cfg.save_vis_max_items,
-            )
-
-        (out.log_dir / "tone_ablation.csv").write_text("\n".join(compare_lines) + "\n", encoding="utf-8")
 
     print("[DONE] Training finished.")
 
