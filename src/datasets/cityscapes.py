@@ -74,7 +74,7 @@ class CityscapesDataset(Dataset):
 
         city = img_path.parent.name
         stem = img_path.name.replace("_leftImg8bit.png", "")
-        mask_path = self.labels_root / city / f"{stem}_gtFine_labelTrainIds.png"
+        mask_path = self.labels_root / city / f"{stem}_gtFine_labelIds.png"
         if not mask_path.exists():
             raise FileNotFoundError(f"Mask not found for {img_path.name}: {mask_path}")
         return mask_path

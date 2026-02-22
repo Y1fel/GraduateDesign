@@ -8,7 +8,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 @dataclass
 class TrainConfig:
-    data_root: Path = PROJECT_ROOT / "data" / "archive" / "Cityscapes"
+    data_root: Path = PROJECT_ROOT / "data"
 
     num_classes: int = 19
     ignore_index: int = 255
@@ -25,8 +25,8 @@ class TrainConfig:
     backbone_pretrained: bool = True
     head_norm: NormType = "bn"
 
-    resize_h: int = 512
-    resize_w: int = 1024
+    resize_h: int = 1024
+    resize_w: int = 2048
     crop_h: int = 512
     crop_w: int = 512
     train_multi_scale_min: float = 1.0
@@ -35,7 +35,7 @@ class TrainConfig:
 
 
     save_vis_every: int = 50
-    save_vis_max_items: int = 8
+    save_vis_max_items: int = 10
 
     outputs_root: Path = PROJECT_ROOT / "outputs"
     seed: int = 42
