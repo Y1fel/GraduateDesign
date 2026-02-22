@@ -11,7 +11,7 @@ from src.commom.repro import set_seed
 from src.datasets.cityscapes import CityscapesDataset
 from src.eval.mIoU import compute_segmentation_metrics
 from src.models.deeplabv3_plus import DeepLabV3Plus
-from src.datasets.cityscapes_labels import CITYSCAPES_34_CLASS_NAMES, CITYSCAPES_34_ID2COLOR
+from src.datasets.cityscapes_labels import CITYSCAPES_19_CLASS_NAMES, CITYSCAPES_19_ID2COLOR
 from src.viz.visualizer import save_predictions_triplet
 from config.config import TrainConfig
 
@@ -43,13 +43,9 @@ def train_one_epoch(
     optimizer,
     criterion,
     device,
-    epoch: int,
-    total_iters: int,
-    base_lr: float,
     use_amp: bool,
     num_classes: int,
     freeze_bn_enabled: bool,
-    power: float = 0.9,
 ) -> dict:
     model.train()
     if freeze_bn_enabled:
@@ -60,12 +56,7 @@ def train_one_epoch(
     grad_norm_sum = 0.0
     grad_steps = 0
 
-    for it, (imgs, masks, _names) in enumerate(loader):
-        global_step = (epoch - 1) * len(loader) + it
-        lr = base_lr * (1 - global_step / total_iters) ** power
-        for pg in optimizer.param_groups:
-            pg["lr"] = lr
-
+    for _it, (imgs, masks, _names) in enumerate(loader):
         imgs = imgs.to(device, non_blocking=True)
         masks = masks.to(device, non_blocking=True)
 
@@ -161,8 +152,8 @@ def main() -> None:
     amp_enabled = bool(cfg.use_amp and device.type == "cuda")
     print(f"[INFO] AMP enabled = {amp_enabled}")
 
-    id2name = {idx: name for idx, name in enumerate(CITYSCAPES_34_CLASS_NAMES)}
-    id2color_vis = CITYSCAPES_34_ID2COLOR
+    id2name = {idx: name for idx, name in enumerate(CITYSCAPES_19_CLASS_NAMES)}
+    id2color_vis = CITYSCAPES_19_ID2COLOR
 
     out = OutputManager(cfg.outputs_root, exp_name="cityscapes_deeplabv3plus")
     out.save_config(cfg)
@@ -232,7 +223,6 @@ def main() -> None:
     best_val_loss = float("inf")
 
     for epoch in range(1, cfg.epochs + 1):
-        total_iters = cfg.epochs * len(train_loader)
         t0 = time.time()
 
         train_stats = train_one_epoch(
@@ -241,9 +231,6 @@ def main() -> None:
             optimizer,
             criterion,
             device,
-            epoch=epoch,
-            total_iters=total_iters,
-            base_lr=cfg.lr_0,
             use_amp=amp_enabled,
             num_classes=cfg.num_classes,
             freeze_bn_enabled=cfg.freeze_bn,

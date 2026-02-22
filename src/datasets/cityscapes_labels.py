@@ -35,6 +35,66 @@ CITYSCAPES_34_CLASS_NAMES = [
     "bicycle",
 ]
 
+# official trainId-compatible 19-class setup (255 means ignored)
+CITYSCAPES_34_TO_19 = [
+    255,  # 00 unlabeled
+    255,  # 01 ego vehicle
+    255,  # 02 rectification border
+    255,  # 03 out of roi
+    255,  # 04 static
+    255,  # 05 dynamic
+    255,  # 06 ground
+    0,    # 07 road
+    1,    # 08 sidewalk
+    0,    # 09 parking -> road
+    255,  # 10 rail track
+    2,    # 11 building
+    3,    # 12 wall
+    4,    # 13 fence
+    4,    # 14 guard rail -> fence
+    2,    # 15 bridge -> building
+    2,    # 16 tunnel -> building
+    5,    # 17 pole
+    5,    # 18 polegroup -> pole
+    6,    # 19 traffic light
+    7,    # 20 traffic sign
+    8,    # 21 vegetation
+    9,    # 22 terrain
+    10,   # 23 sky
+    11,   # 24 person
+    12,   # 25 rider
+    13,   # 26 car
+    14,   # 27 truck
+    15,   # 28 bus
+    14,   # 29 caravan -> truck
+    14,   # 30 trailer -> truck
+    16,   # 31 train
+    17,   # 32 motorcycle
+    18,   # 33 bicycle
+]
+
+CITYSCAPES_19_CLASS_NAMES = [
+    "road",
+    "sidewalk",
+    "building",
+    "wall",
+    "fence",
+    "pole",
+    "traffic light",
+    "traffic sign",
+    "vegetation",
+    "terrain",
+    "sky",
+    "person",
+    "rider",
+    "car",
+    "truck",
+    "bus",
+    "train",
+    "motorcycle",
+    "bicycle",
+]
+
 # official Cityscapes palette for labelId 0..33
 CITYSCAPES_34_ID2COLOR = [
     (0, 0, 0),
@@ -71,4 +131,26 @@ CITYSCAPES_34_ID2COLOR = [
     (0, 80, 100),
     (0, 0, 230),
     (119, 11, 32),
+]
+
+CITYSCAPES_19_ID2COLOR = [
+    CITYSCAPES_34_ID2COLOR[7],
+    CITYSCAPES_34_ID2COLOR[8],
+    CITYSCAPES_34_ID2COLOR[11],
+    CITYSCAPES_34_ID2COLOR[12],
+    CITYSCAPES_34_ID2COLOR[13],
+    CITYSCAPES_34_ID2COLOR[17],
+    CITYSCAPES_34_ID2COLOR[19],
+    CITYSCAPES_34_ID2COLOR[20],
+    CITYSCAPES_34_ID2COLOR[21],
+    CITYSCAPES_34_ID2COLOR[22],
+    CITYSCAPES_34_ID2COLOR[23],
+    CITYSCAPES_34_ID2COLOR[24],
+    CITYSCAPES_34_ID2COLOR[25],
+    CITYSCAPES_34_ID2COLOR[26],
+    CITYSCAPES_34_ID2COLOR[27],
+    CITYSCAPES_34_ID2COLOR[28],
+    CITYSCAPES_34_ID2COLOR[31],
+    CITYSCAPES_34_ID2COLOR[32],
+    CITYSCAPES_34_ID2COLOR[33],
 ]
