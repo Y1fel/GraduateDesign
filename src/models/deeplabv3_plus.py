@@ -16,7 +16,8 @@ class DeepLabV3Plus(nn.Module):
         output_stride: int = 16,
         aspp_out_channels: int = 256,
         decoder_channels: int = 256,
-        dropout: float = 0.1,
+        aspp_dropout: float = 0.1,
+        decoder_dropout: float = 0.2,
         head_norm: NormType = "bn",
     ):
         super().__init__()
@@ -35,7 +36,7 @@ class DeepLabV3Plus(nn.Module):
             in_channels=self.backbone.out_channels,
             out_channels=aspp_out_channels,
             atrous_rates=rates,
-            dropout=dropout,
+            dropout=aspp_dropout,
             norm=head_norm,
         )
 
@@ -43,7 +44,7 @@ class DeepLabV3Plus(nn.Module):
             low_level_in_channels=self.backbone.low_level_channels,
             aspp_out_channels=aspp_out_channels,
             decoder_channels=decoder_channels,
-            dropout=dropout,
+            dropout=decoder_dropout,
             norm=head_norm,
         )
 

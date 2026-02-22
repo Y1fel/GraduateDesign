@@ -16,9 +16,9 @@ class TrainConfig:
     epochs: int = 100
     batch_size: int = 16
     num_workers: int = 4
-    # Fixed learning rate.
     lr_0: float = 3e-4
-    weight_decay: float = 1e-4
+    weight_decay: float = 1e-3
+    lr_eta_min: float = 1e-6
     # Freeze BN only for small-batch settings after stability is verified.
     freeze_bn: bool = False
     dominant_class_warn_ratio: float = 0.9
@@ -28,6 +28,8 @@ class TrainConfig:
     output_stride: int = 16
     backbone_pretrained: bool = True
     head_norm: NormType = "bn"
+    aspp_dropout: float = 0.1
+    decoder_dropout: float = 0.2
 
     resize_h: int = 1024
     resize_w: int = 2048
