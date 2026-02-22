@@ -121,16 +121,6 @@ def save_vis_using_best_ckpt(
     model.load_state_dict(cur_state, strict=True)
 
 
-def build_eval_preprocess(auto_contrast: bool, auto_contrast_cutoff: float, low_light: bool, gamma: float, brightness_gain: float) -> dict:
-    return {
-        "auto_contrast": auto_contrast,
-        "auto_contrast_cutoff": auto_contrast_cutoff,
-        "low_light_preprocess_enable": low_light,
-        "low_light_gamma": gamma,
-        "low_light_brightness_gain": brightness_gain,
-    }
-
-
 def main() -> None:
     cfg = TrainConfig()
     set_seed(cfg.seed)
@@ -152,31 +142,10 @@ def main() -> None:
 
     train_preprocess = {
         "hflip_prob": cfg.hflip_prob,
-        "photo_aug_prob": cfg.photo_aug_prob,
-        "brightness_jitter": cfg.brightness_jitter,
-        "contrast_jitter": cfg.contrast_jitter,
-        "saturation_jitter": cfg.saturation_jitter,
-        "gamma_range": (cfg.gamma_min, cfg.gamma_max),
-        "photo_op_prob": cfg.photo_op_prob,
-        "blur_prob": cfg.blur_prob,
-        "blur_radius_range": (cfg.blur_radius_min, cfg.blur_radius_max),
-        "jpeg_prob": cfg.jpeg_prob,
-        "jpeg_quality_range": (cfg.jpeg_quality_min, cfg.jpeg_quality_max),
         "multi_scale_range": (cfg.train_multi_scale_min, cfg.train_multi_scale_max),
         "random_crop_size": None,
-        "auto_contrast": cfg.train_auto_contrast_enable,
-        "auto_contrast_cutoff": cfg.train_auto_contrast_cutoff,
-        "low_light_preprocess_enable": cfg.train_low_light_preprocess_enable,
-        "low_light_gamma": cfg.low_light_gamma,
-        "low_light_brightness_gain": cfg.low_light_brightness_gain,
     }
-    eval_preprocess = build_eval_preprocess(
-        auto_contrast=cfg.eval_auto_contrast_enable,
-        auto_contrast_cutoff=cfg.eval_auto_contrast_cutoff,
-        low_light=cfg.eval_low_light_preprocess_enable,
-        gamma=cfg.low_light_gamma,
-        brightness_gain=cfg.low_light_brightness_gain,
-    )
+    eval_preprocess = {}
 
     train_ds = CamVidFolderDataset(
         root=cfg.data_root,
@@ -263,17 +232,6 @@ def main() -> None:
         total_iters = cfg.epochs * len(train_loader)
         t0 = time.time()
 
-        if hasattr(train_ds, "reset_aug_stats"):
-            train_ds.reset_aug_stats()
-
-        if hasattr(train_ds, "set_photo_aug_scale"):
-            if cfg.photo_aug_warmup_epochs > 0:
-                aug_scale = min(1.0, epoch / float(cfg.photo_aug_warmup_epochs))
-            else:
-                aug_scale = 1.0
-            train_ds.set_photo_aug_scale(aug_scale)
-            print(f"[AUG] photo_aug_prob={train_ds.photo_aug_prob_current:.3f} (scale={aug_scale:.2f})")
-
         train_loss = train_one_epoch(
             model,
             train_loader,
@@ -323,13 +281,6 @@ def main() -> None:
                     f"iou={iou_val:.4f} precision={precision_val:.4f} recall={recall_val:.4f}"
                 )
 
-        if hasattr(train_ds, "consume_aug_stats"):
-            aug_stats = train_ds.consume_aug_stats()
-            print(
-                "[AUG-STATS] "
-                f"photometric={aug_stats['photometric_applied']}/{aug_stats['samples_seen']} "
-                f"blur={aug_stats['blur_applied']} jpeg={aug_stats['jpeg_applied']}"
-            )
         if device.type == "cuda":
             peak = torch.cuda.max_memory_allocated() / 1024**3
             print(f"[MEM] peak_allocated = {peak:.2f} GB")
@@ -341,10 +292,6 @@ def main() -> None:
             val_miou=val_miou,
             val_bf1=float(val_metrics["boundary_fscore"]),
             dt=dt,
-            train_auto_contrast_enable=cfg.train_auto_contrast_enable,
-            train_low_light_preprocess_enable=cfg.train_low_light_preprocess_enable,
-            low_light_gamma=cfg.low_light_gamma,
-            low_light_brightness_gain=cfg.low_light_brightness_gain,
         )
         for class_id, class_name, iou_val, precision_val, recall_val in per_class_rows:
             out.append_per_class_metrics(
