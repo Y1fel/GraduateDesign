@@ -6,6 +6,7 @@ import torch
 from PIL import Image
 from torch.utils.data import Dataset
 
+from src.datasets.cityscapes_labels import CITYSCAPES_34_TO_19
 from src.datasets.transforms import (
     maybe_hflip_pair,
     pil_to_tensor,
@@ -39,6 +40,7 @@ class CityscapesDataset(Dataset):
         hflip_prob: float = 0.0,
         multi_scale_range: Tuple[float, float] = (1.0, 1.0),
         random_crop_size: Optional[Tuple[int, int]] = None,
+        remap_to_19: bool = True,
     ) -> None:
         assert split in ("train", "val", "test"), f"split must be train/val/test, got {split}"
 
@@ -52,6 +54,8 @@ class CityscapesDataset(Dataset):
         self.hflip_prob = float(hflip_prob)
         self.multi_scale_range = (float(multi_scale_range[0]), float(multi_scale_range[1]))
         self.random_crop_size = random_crop_size
+        self.remap_to_19 = bool(remap_to_19)
+        self._label_id_to_train_id = np.asarray(CITYSCAPES_34_TO_19, dtype=np.uint8)
 
         self.images_root = self.root / "leftImg8bit" / split
         self.labels_root = self.root / "gtFine" / split
@@ -100,6 +104,11 @@ class CityscapesDataset(Dataset):
             img, mask_id = maybe_hflip_pair(img, mask_id, self.hflip_prob)
 
         mask_new = np.asarray(mask_id, dtype=np.uint8)
+        if self.remap_to_19:
+            valid = mask_new <= 33
+            remapped = np.full(mask_new.shape, fill_value=self.ignore_index, dtype=np.uint8)
+            remapped[valid] = self._label_id_to_train_id[mask_new[valid]]
+            mask_new = remapped
 
         if self.training and self.random_crop_size is not None:
             crop_w, crop_h = int(self.random_crop_size[0]), int(self.random_crop_size[1])
