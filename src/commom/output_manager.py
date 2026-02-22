@@ -7,7 +7,7 @@ from typing import Any
 
 
 class OutputManager:
-    def __init__(self, outputs_root: Path, exp_name: str = "camvid_deeplabv3p") -> None:
+    def __init__(self, outputs_root: Path, exp_name: str = "cityscapes_deeplabv3p") -> None:
         ts = time.strftime("%Y%m%d_%H%M%S")
         self.run_dir = outputs_root / f"{exp_name}_{ts}"
         self.ckpt_dir = self.run_dir / "checkpoints"

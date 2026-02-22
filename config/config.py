@@ -8,9 +8,9 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 @dataclass
 class TrainConfig:
-    data_root: Path = PROJECT_ROOT / "data" / "archive" / "CamVid"
+    data_root: Path = PROJECT_ROOT / "data" / "archive" / "Cityscapes"
 
-    num_classes: int = 32
+    num_classes: int = 19
     ignore_index: int = 255
 
     epochs: int = 100
@@ -25,10 +25,10 @@ class TrainConfig:
     backbone_pretrained: bool = True
     head_norm: NormType = "bn"
 
-    resize_h: int = 720
-    resize_w: int = 960
-    crop_h: int = 720
-    crop_w: int = 960
+    resize_h: int = 512
+    resize_w: int = 1024
+    crop_h: int = 512
+    crop_w: int = 1024
     train_multi_scale_min: float = 1.0
     train_multi_scale_max: float = 1.0
     hflip_prob: float = 0.5
