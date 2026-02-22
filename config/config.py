@@ -10,7 +10,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 class TrainConfig:
     data_root: Path = PROJECT_ROOT / "data"
 
-    num_classes: int = 19
+    num_classes: int = 34
     ignore_index: int = 255
 
     epochs: int = 100
