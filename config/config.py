@@ -16,7 +16,7 @@ class TrainConfig:
     epochs: int = 100
     batch_size: int = 8
     num_workers: int = 4
-    lr_0: float = 0.01
+    lr_0: float = 1e-4
     weight_decay: float = 1e-4
 
     label_smoothing: float = 0.0
