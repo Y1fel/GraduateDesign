@@ -351,12 +351,39 @@ def main() -> None:
         val_metrics = compute_segmentation_metrics(model, val_loader, device, cfg.num_classes, cfg.ignore_index)
         val_miou = float(val_metrics["miou"])
 
+        iou_per_class = val_metrics["iou_per_class"]
+        precision_per_class = val_metrics["precision_per_class"]
+        recall_per_class = val_metrics["recall_per_class"]
+
         dt = time.time() - t0
         print(
             f"[EPOCH {epoch:03d}/{cfg.epochs}] train_loss={train_loss:.4f} "
             f"val_loss={val_loss:.4f} val_mIoU={val_miou:.4f} "
             f"val_BF1={val_metrics['boundary_fscore']:.4f} val_TrimapIoU={val_metrics['trimap_iou']:.4f} time={dt:.1f}s"
         )
+        print("[PER-CLASS] class_id class_name iou precision recall")
+        per_class_rows = []
+        for class_id in range(cfg.num_classes):
+            class_name = id2name.get(class_id, id2name.get(str(class_id), f"class_{class_id}"))
+            iou_val = float(iou_per_class[class_id])
+            precision_val = float(precision_per_class[class_id])
+            recall_val = float(recall_per_class[class_id])
+            print(
+                f"[PER-CLASS] {class_id:02d} {class_name:<18} "
+                f"iou={iou_val:.4f} precision={precision_val:.4f} recall={recall_val:.4f}"
+            )
+            per_class_rows.append((class_id, class_name, iou_val, precision_val, recall_val))
+
+        valid_rows = [row for row in per_class_rows if not math.isnan(row[2])]
+        if valid_rows:
+            bottom_k = min(5, len(valid_rows))
+            bottom_rows = sorted(valid_rows, key=lambda row: row[2])[:bottom_k]
+            print(f"[PER-CLASS][BOTTOM-{bottom_k}] Lowest IoU classes:")
+            for class_id, class_name, iou_val, precision_val, recall_val in bottom_rows:
+                print(
+                    f"[PER-CLASS][BOTTOM] {class_id:02d} {class_name:<18} "
+                    f"iou={iou_val:.4f} precision={precision_val:.4f} recall={recall_val:.4f}"
+                )
 
         if hasattr(train_ds, "consume_aug_stats"):
             aug_stats = train_ds.consume_aug_stats()
@@ -382,6 +409,15 @@ def main() -> None:
             low_light_gamma=cfg.low_light_gamma,
             low_light_brightness_gain=cfg.low_light_brightness_gain,
         )
+        for class_id, class_name, iou_val, precision_val, recall_val in per_class_rows:
+            out.append_per_class_metrics(
+                epoch=epoch,
+                class_id=class_id,
+                class_name=class_name,
+                iou=iou_val,
+                precision=precision_val,
+                recall=recall_val,
+            )
 
         ckpt = {
             "epoch": epoch,
