@@ -2,11 +2,10 @@ import math
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
 
-import numpy as np
 import torch
 from torch.utils.data import DataLoader
+import torch.nn as nn
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -17,6 +16,7 @@ from src.eval.mIoU import compute_segmentation_metrics
 from src.models.deeplabv3_plus import DeepLabV3Plus
 from src.utils.Id2Mask import load_class_dict_csv
 from src.viz.visualizer import save_predictions_triplet
+from src.models.switch2Norm import NormType
 
 
 @dataclass
@@ -29,19 +29,19 @@ class TrainConfig:
     epochs: int = 100
     batch_size: int = 8
     num_workers: int = 4
-    lr_0: float = 5e-4
+    lr_0: float = 0.01
     weight_decay: float = 1e-4
 
     label_smoothing: float = 0.0
 
-    output_stride: int = 8
+    output_stride: int = 16
     backbone_pretrained: bool = True
-    head_norm: str = "bn"
+    head_norm: NormType = "bn"
 
     resize_h: int = 720
     resize_w: int = 960
-    crop_h: int = 512
-    crop_w: int = 768
+    crop_h: int = 720
+    crop_w: int = 960
     train_multi_scale_min: float = 1.0
     train_multi_scale_max: float = 1.0
     hflip_prob: float = 0.5
@@ -82,8 +82,14 @@ class TrainConfig:
 
     outputs_root: Path = PROJECT_ROOT / "outputs"
     seed: int = 42
-    use_amp: bool = True
+    use_amp: bool = False
 
+def freeze_bn(model):
+    for m in model.modules():
+        if isinstance(m, nn.BatchNorm2d):
+            m.eval()
+            m.weight.requires_grad = False
+            m.bias.requires_grad = False
 
 def resolve_effective_tone_aug(cfg: TrainConfig) -> dict[str, float]:
     effective = {
@@ -119,18 +125,6 @@ def summarize_tone_cfg(prefix: str, cfg: dict) -> str:
         f"brightness_gain={float(cfg['low_light_brightness_gain']):.2f}"
     )
 
-
-def print_small_object_metrics(metric_name: str, values: Sequence[float], names: Sequence[str], indices: Sequence[int]) -> None:
-    msg = []
-    for cls_name, idx in zip(names, indices):
-        v = values[idx]
-        if np.isnan(v):
-            msg.append(f"{cls_name}=nan")
-        else:
-            msg.append(f"{cls_name}={v:.4f}")
-    print(f"[VAL-small] {metric_name}: " + " | ".join(msg))
-
-
 def train_one_epoch(
     model,
     loader,
@@ -144,8 +138,9 @@ def train_one_epoch(
     power: float = 0.9,
 ) -> float:
     model.train()
+    freeze_bn(model)
     total_loss, n = 0.0, 0
-    scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
+    scaler = torch.amp.GradScaler('cuda',enabled=use_amp)
 
     for it, (imgs, masks, _names) in enumerate(loader):
         global_step = (epoch - 1) * len(loader) + it
@@ -158,7 +153,7 @@ def train_one_epoch(
 
         optimizer.zero_grad(set_to_none=True)
 
-        with torch.cuda.amp.autocast(enabled=use_amp):
+        with torch.amp.autocast('cuda',enabled=use_amp):
             logits = model(imgs)
             loss = criterion(logits, masks)
 
@@ -183,7 +178,7 @@ def evaluate_loss(model, loader, criterion, device, use_amp: bool) -> float:
         imgs = imgs.to(device, non_blocking=True)
         masks = masks.to(device, non_blocking=True)
 
-        with torch.cuda.amp.autocast(enabled=use_amp):
+        with torch.amp.autocast('cuda',enabled=use_amp):
             logits = model(imgs)
             loss = criterion(logits, masks)
 
@@ -241,7 +236,6 @@ def main() -> None:
     color2id, id2color, id2name = load_class_dict_csv(csv_path)
 
     id2color_vis = id2color
-    class_names = [id2name[i] for i in range(cfg.num_classes)]
 
     out = OutputManager(cfg.outputs_root, exp_name="camvid_deeplabv3plus")
     out.save_config(cfg)
@@ -336,6 +330,22 @@ def main() -> None:
         head_norm=cfg.head_norm,
     ).to(device)
 
+    print("====== 检查 backbone 是否加载预训练 ======")
+
+    # 假设 model.encoder 是 backbone（如果你是 model.backbone 自己改一下）
+    backbone = model.backbone
+
+    # 找到第一层卷积
+    first_conv = None
+    for m in backbone.modules():
+        if isinstance(m, nn.Conv2d):
+            first_conv = m
+            break
+
+    w = first_conv.weight.data
+    print("conv1 weight mean:", w.mean().item())
+    print("conv1 weight std :", w.std().item())
+
     criterion = torch.nn.CrossEntropyLoss(
         ignore_index=cfg.ignore_index,
         label_smoothing=cfg.label_smoothing,
@@ -396,9 +406,6 @@ def main() -> None:
             f"val_loss={val_loss:.4f} val_mIoU={val_miou:.4f} "
             f"val_BF1={val_metrics['boundary_fscore']:.4f} val_TrimapIoU={val_metrics['trimap_iou']:.4f} time={dt:.1f}s"
         )
-        small_indices = [i for i in [5, 20, 21] if i < cfg.num_classes]
-        print_small_object_metrics("IoU", val_metrics["iou_per_class"], class_names, small_indices)
-        print_small_object_metrics("Recall", val_metrics["recall_per_class"], class_names, small_indices)
 
         if hasattr(train_ds, "consume_aug_stats"):
             aug_stats = train_ds.consume_aug_stats()

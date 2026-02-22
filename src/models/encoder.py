@@ -50,11 +50,11 @@ class ResNetBackbone(nn.Module):
         x = self.relu(x)
         x = self.maxpool(x)
 
-        x = self.layer1(x)
-        low_level = x  # (N, 256, H/4, W/4)
+        x1 = self.layer1(x)
+        low_level = x1  # (N, 256, H/4, W/4)
 
-        mid_level = self.layer2(x)  # (N, 512, H/8, W/8)
-        x = self.layer3(mid_level)
-        high_level = self.layer4(x)  # (N, 2048, H/OS, W/OS)
+        x2 = self.layer2(x1)  # (N, 512, H/8, W/8)
+        x3 = self.layer3(x2)
+        x4 = self.layer4(x3)  # (N, 2048, H/OS, W/OS)
 
-        return low_level, mid_level, high_level
+        return low_level, x2, x4
