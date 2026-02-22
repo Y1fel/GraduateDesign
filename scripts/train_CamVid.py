@@ -1,13 +1,10 @@
 import math
 import time
-from dataclasses import dataclass
 from pathlib import Path
 
 import torch
 from torch.utils.data import DataLoader
 import torch.nn as nn
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 from src.commom.output_manager import OutputManager
 from src.commom.repro import set_seed
@@ -16,73 +13,8 @@ from src.eval.mIoU import compute_segmentation_metrics
 from src.models.deeplabv3_plus import DeepLabV3Plus
 from src.utils.Id2Mask import load_class_dict_csv
 from src.viz.visualizer import save_predictions_triplet
-from src.models.switch2Norm import NormType
+from config.config import TrainConfig
 
-
-@dataclass
-class TrainConfig:
-    data_root: Path = PROJECT_ROOT / "data" / "archive" / "CamVid"
-
-    num_classes: int = 32
-    ignore_index: int = 255
-
-    epochs: int = 100
-    batch_size: int = 8
-    num_workers: int = 4
-    lr_0: float = 0.01
-    weight_decay: float = 1e-4
-
-    label_smoothing: float = 0.0
-
-    output_stride: int = 16
-    backbone_pretrained: bool = True
-    head_norm: NormType = "bn"
-
-    resize_h: int = 720
-    resize_w: int = 960
-    crop_h: int = 720
-    crop_w: int = 960
-    train_multi_scale_min: float = 1.0
-    train_multi_scale_max: float = 1.0
-    hflip_prob: float = 0.5
-
-    photo_aug_prob: float = 0.35
-    brightness_jitter: float = 0.10
-    contrast_jitter: float = 0.08
-    saturation_jitter: float = 0.06
-    gamma_min: float = 0.95
-    gamma_max: float = 1.05
-    photo_op_prob: float = 0.50
-    blur_prob: float = 0.03
-    blur_radius_min: float = 0.1
-    blur_radius_max: float = 0.6
-    jpeg_prob: float = 0.03
-    jpeg_quality_min: int = 90
-    jpeg_quality_max: int = 98
-    photo_aug_warmup_epochs: int = 20
-
-    train_auto_contrast_enable: bool = True
-    train_auto_contrast_cutoff: float = 1.0
-    eval_auto_contrast_enable: bool = False
-    eval_auto_contrast_cutoff: float = 1.0
-
-    train_low_light_preprocess_enable: bool = True
-    eval_low_light_preprocess_enable: bool = False
-    sync_eval_tone_with_train: bool = False
-    low_light_gamma: float = 0.85
-    low_light_brightness_gain: float = 1.10
-
-    avoid_overstrong_tone_ops: bool = True
-    photo_aug_prob_cap_when_tone_stack: float = 0.20
-    photo_op_prob_cap_when_tone_stack: float = 0.35
-    jitter_scale_when_tone_stack: float = 0.7
-
-    save_vis_every: int = 50
-    save_vis_max_items: int = 8
-
-    outputs_root: Path = PROJECT_ROOT / "outputs"
-    seed: int = 42
-    use_amp: bool = False
 
 def freeze_bn(model):
     for m in model.modules():
@@ -223,6 +155,16 @@ def save_vis_using_best_ckpt(
     model.load_state_dict(cur_state, strict=True)
 
 
+def build_eval_preprocess(auto_contrast: bool, auto_contrast_cutoff: float, low_light: bool, gamma: float, brightness_gain: float) -> dict:
+    return {
+        "auto_contrast": auto_contrast,
+        "auto_contrast_cutoff": auto_contrast_cutoff,
+        "low_light_preprocess_enable": low_light,
+        "low_light_gamma": gamma,
+        "low_light_brightness_gain": brightness_gain,
+    }
+
+
 def main() -> None:
     cfg = TrainConfig()
     set_seed(cfg.seed)
@@ -264,22 +206,31 @@ def main() -> None:
         "low_light_gamma": cfg.low_light_gamma,
         "low_light_brightness_gain": cfg.low_light_brightness_gain,
     }
+    tone_on_eval_preprocess = build_eval_preprocess(
+        auto_contrast=cfg.train_auto_contrast_enable,
+        auto_contrast_cutoff=cfg.train_auto_contrast_cutoff,
+        low_light=cfg.train_low_light_preprocess_enable,
+        gamma=cfg.low_light_gamma,
+        brightness_gain=cfg.low_light_brightness_gain,
+    )
+    tone_off_eval_preprocess = build_eval_preprocess(
+        auto_contrast=False,
+        auto_contrast_cutoff=cfg.eval_auto_contrast_cutoff,
+        low_light=False,
+        gamma=cfg.low_light_gamma,
+        brightness_gain=cfg.low_light_brightness_gain,
+    )
+
     if cfg.sync_eval_tone_with_train:
-        eval_preprocess = {
-            "auto_contrast": cfg.train_auto_contrast_enable,
-            "auto_contrast_cutoff": cfg.train_auto_contrast_cutoff,
-            "low_light_preprocess_enable": cfg.train_low_light_preprocess_enable,
-            "low_light_gamma": cfg.low_light_gamma,
-            "low_light_brightness_gain": cfg.low_light_brightness_gain,
-        }
+        eval_preprocess = tone_on_eval_preprocess
     else:
-        eval_preprocess = {
-            "auto_contrast": cfg.eval_auto_contrast_enable,
-            "auto_contrast_cutoff": cfg.eval_auto_contrast_cutoff,
-            "low_light_preprocess_enable": cfg.eval_low_light_preprocess_enable,
-            "low_light_gamma": cfg.low_light_gamma,
-            "low_light_brightness_gain": cfg.low_light_brightness_gain,
-        }
+        eval_preprocess = build_eval_preprocess(
+            auto_contrast=cfg.eval_auto_contrast_enable,
+            auto_contrast_cutoff=cfg.eval_auto_contrast_cutoff,
+            low_light=cfg.eval_low_light_preprocess_enable,
+            gamma=cfg.low_light_gamma,
+            brightness_gain=cfg.low_light_brightness_gain,
+        )
 
     train_ds = CamVidFolderDataset(
         root=cfg.data_root,
@@ -418,7 +369,19 @@ def main() -> None:
             peak = torch.cuda.max_memory_allocated() / 1024**3
             print(f"[MEM] peak_allocated = {peak:.2f} GB")
 
-        out.append_metrics(epoch, train_loss, val_loss, val_miou, dt)
+        out.append_metrics(
+            epoch=epoch,
+            train_loss=train_loss,
+            val_loss=val_loss,
+            val_miou=val_miou,
+            val_bf1=float(val_metrics["boundary_fscore"]),
+            dt=dt,
+            sync_eval_tone_with_train=cfg.sync_eval_tone_with_train,
+            train_auto_contrast_enable=cfg.train_auto_contrast_enable,
+            train_low_light_preprocess_enable=cfg.train_low_light_preprocess_enable,
+            low_light_gamma=cfg.low_light_gamma,
+            low_light_brightness_gain=cfg.low_light_brightness_gain,
+        )
 
         ckpt = {
             "epoch": epoch,
@@ -457,6 +420,62 @@ def main() -> None:
 
         cur_lr = optimizer.param_groups[0]["lr"]
         print(f"... lr={cur_lr:.6f}")
+
+    best_ckpt_path = out.ckpt_dir / "best.pth"
+    if best_ckpt_path.exists():
+        print("[TONE-ABLATION] Evaluating best checkpoint with tone on/off val pipeline...")
+        ckpt = torch.load(best_ckpt_path, map_location="cpu")
+        state = ckpt["model_state"] if isinstance(ckpt, dict) and "model_state" in ckpt else ckpt
+        model.load_state_dict(state, strict=True)
+
+        tone_eval_settings = {
+            "tone_on": tone_on_eval_preprocess,
+            "tone_off": tone_off_eval_preprocess,
+        }
+        compare_lines = ["setting,miou,bf1,trimap_iou"]
+        for setting_name, setting in tone_eval_settings.items():
+            eval_ds_cmp = CamVidFolderDataset(
+                root=cfg.data_root,
+                split="val",
+                color2id=color2id,
+                resize_w=cfg.resize_w,
+                resize_h=cfg.resize_h,
+                ignore_index=cfg.ignore_index,
+                training=False,
+                label_lut=None,
+                train_preprocess=train_preprocess,
+                eval_preprocess=setting,
+            )
+            eval_loader_cmp = DataLoader(
+                eval_ds_cmp,
+                batch_size=cfg.batch_size,
+                shuffle=False,
+                num_workers=cfg.num_workers,
+                pin_memory=(device.type == "cuda"),
+                drop_last=False,
+            )
+            cmp_metrics = compute_segmentation_metrics(model, eval_loader_cmp, device, cfg.num_classes, cfg.ignore_index)
+            print(
+                f"[TONE-ABLATION] {setting_name} -> "
+                f"mIoU={cmp_metrics['miou']:.4f} BF1={cmp_metrics['boundary_fscore']:.4f} "
+                f"TrimapIoU={cmp_metrics['trimap_iou']:.4f} "
+                f"({summarize_tone_cfg(setting_name, setting)})"
+            )
+            compare_lines.append(
+                f"{setting_name},{cmp_metrics['miou']:.6f},{cmp_metrics['boundary_fscore']:.6f},{cmp_metrics['trimap_iou']:.6f}"
+            )
+            save_predictions_triplet(
+                model=model,
+                loader=eval_loader_cmp,
+                device=device,
+                out_dir=out.vis_dir / "tone_ablation" / setting_name,
+                id2color=id2color_vis,
+                ignore_index=cfg.ignore_index,
+                epoch=cfg.epochs,
+                max_items=cfg.save_vis_max_items,
+            )
+
+        (out.log_dir / "tone_ablation.csv").write_text("\n".join(compare_lines) + "\n", encoding="utf-8")
 
     print("[DONE] Training finished.")
 

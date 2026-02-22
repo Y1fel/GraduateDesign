@@ -32,9 +32,50 @@ class OutputManager:
             return
         with self.metrics_csv.open("w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
-            w.writerow(["epoch", "train_loss", "val_loss", "val_miou", "time_sec"])
+            w.writerow(
+                [
+                    "epoch",
+                    "train_loss",
+                    "val_loss",
+                    "val_miou",
+                    "val_bf1",
+                    "time_sec",
+                    "sync_eval_tone_with_train",
+                    "train_auto_contrast_enable",
+                    "train_low_light_preprocess_enable",
+                    "low_light_gamma",
+                    "low_light_brightness_gain",
+                ]
+            )
 
-    def append_metrics(self, epoch: int, train_loss: float, val_loss: float, val_miou: float, dt: float) -> None:
+    def append_metrics(
+        self,
+        epoch: int,
+        train_loss: float,
+        val_loss: float,
+        val_miou: float,
+        val_bf1: float,
+        dt: float,
+        sync_eval_tone_with_train: bool,
+        train_auto_contrast_enable: bool,
+        train_low_light_preprocess_enable: bool,
+        low_light_gamma: float,
+        low_light_brightness_gain: float,
+    ) -> None:
         with self.metrics_csv.open("a", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
-            w.writerow([epoch, f"{train_loss:.6f}", f"{val_loss:.6f}", f"{val_miou:.6f}", f"{dt:.2f}"])
+            w.writerow(
+                [
+                    epoch,
+                    f"{train_loss:.6f}",
+                    f"{val_loss:.6f}",
+                    f"{val_miou:.6f}",
+                    f"{val_bf1:.6f}",
+                    f"{dt:.2f}",
+                    str(sync_eval_tone_with_train),
+                    str(train_auto_contrast_enable),
+                    str(train_low_light_preprocess_enable),
+                    f"{low_light_gamma:.4f}",
+                    f"{low_light_brightness_gain:.4f}",
+                ]
+            )
