@@ -15,6 +15,7 @@ from src.models.deeplabv3_plus import DeepLabV3Plus
 from src.datasets.cityscapes_labels import CITYSCAPES_19_CLASS_NAMES, CITYSCAPES_19_ID2COLOR
 from src.viz.visualizer import save_predictions_triplet
 from config.config import TrainConfig
+from loss.focalloss import FocalLoss
 
 
 def freeze_bn(model):
@@ -207,9 +208,10 @@ def main() -> None:
         decoder_dropout=cfg.decoder_dropout,
     ).to(device)
 
-    criterion = torch.nn.CrossEntropyLoss(
+    criterion = FocalLoss(
+        gamma=2.0,
+        alpha=None,
         ignore_index=cfg.ignore_index,
-        label_smoothing=cfg.label_smoothing,
     ).to(device)
 
     optimizer = torch.optim.SGD(
