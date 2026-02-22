@@ -1,15 +1,16 @@
+import argparse
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-import pandas as pd
 import matplotlib.pyplot as plt
+import pandas as pd
 
 
 @dataclass
 class PlotConfig:
-    metrics_csv: Path = Path("D:\MachineLearning\GraduateDesign\outputs\wrongDirect\camvid_deeplabv3plus_20260218_150102\logs\metrics.csv")
-    out_dir: Path = Path("D:\MachineLearning\GraduateDesign\outputs\wrongDirect\camvid_deeplabv3plus_20260218_150102\logs\plots")
+    metrics_csv: Optional[Path] = None
+    out_dir: Optional[Path] = None
     save_fig: bool = True
     show_fig: bool = True
 
@@ -25,11 +26,9 @@ def load_metrics(csv_path: Path) -> pd.DataFrame:
     if missing:
         raise ValueError(f"Missing required columns {missing} in {csv_path}")
 
-    # Ensure epoch numeric and sorted
     df["epoch"] = pd.to_numeric(df["epoch"], errors="coerce")
     df = df.dropna(subset=["epoch"]).sort_values("epoch").reset_index(drop=True)
 
-    # Convert numeric columns if present
     for col in ("train_loss", "val_miou"):
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
@@ -54,8 +53,30 @@ def plot_series(df: pd.DataFrame, x: str, y: str, title: str, out_path: Optional
         plt.close()
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Plot training metrics from metrics.csv")
+    parser.add_argument("--metrics-csv", type=Path, required=True, help="Path to logs/metrics.csv")
+    parser.add_argument("--out-dir", type=Path, default=None, help="Directory to save figures")
+    parser.add_argument("--show", dest="show_fig", action="store_true", help="Show figures interactively")
+    parser.add_argument("--no-show", dest="show_fig", action="store_false", help="Do not show figures")
+    parser.set_defaults(show_fig=True)
+    parser.add_argument("--save", dest="save_fig", action="store_true", help="Save figures to --out-dir")
+    parser.add_argument("--no-save", dest="save_fig", action="store_false", help="Do not save figures")
+    parser.set_defaults(save_fig=True)
+    return parser.parse_args()
+
+
 def main() -> None:
-    cfg = PlotConfig()
+    args = parse_args()
+    cfg = PlotConfig(
+        metrics_csv=args.metrics_csv,
+        out_dir=args.out_dir,
+        save_fig=bool(args.save_fig),
+        show_fig=bool(args.show_fig),
+    )
+
+    if cfg.save_fig and cfg.out_dir is None:
+        cfg.out_dir = cfg.metrics_csv.parent / "plots"
 
     df = load_metrics(cfg.metrics_csv)
 
@@ -65,7 +86,7 @@ def main() -> None:
             x="epoch",
             y="train_loss",
             title="Train Loss vs Epoch",
-            out_path=(cfg.out_dir / "train_loss.png") if cfg.save_fig else None,
+            out_path=(cfg.out_dir / "train_loss.png") if cfg.save_fig and cfg.out_dir is not None else None,
             show=cfg.show_fig,
         )
 
@@ -75,9 +96,10 @@ def main() -> None:
             x="epoch",
             y="val_miou",
             title="Val mIoU vs Epoch",
-            out_path=(cfg.out_dir / "val_miou.png") if cfg.save_fig else None,
+            out_path=(cfg.out_dir / "val_miou.png") if cfg.save_fig and cfg.out_dir is not None else None,
             show=cfg.show_fig,
         )
+
 
 if __name__ == "__main__":
     main()

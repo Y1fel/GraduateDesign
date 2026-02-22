@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Optional, Tuple
 
 import numpy as np
 import torch
@@ -13,18 +13,6 @@ from src.datasets.transforms import (
     resize_pair,
     normalize_img,
 )
-
-
-def _build_default_train_preprocess() -> Dict[str, Any]:
-    return {
-        "multi_scale_range": (1.0, 1.0),
-        "random_crop_size": None,
-        "hflip_prob": 0.0,
-    }
-
-
-def _build_default_eval_preprocess() -> Dict[str, Any]:
-    return {}
 
 
 class CityscapesDataset(Dataset):
@@ -48,8 +36,9 @@ class CityscapesDataset(Dataset):
         resize_h: int,
         ignore_index: int,
         training: bool,
-        train_preprocess: Optional[Dict[str, Any]] = None,
-        eval_preprocess: Optional[Dict[str, Any]] = None,
+        hflip_prob: float = 0.0,
+        multi_scale_range: Tuple[float, float] = (1.0, 1.0),
+        random_crop_size: Optional[Tuple[int, int]] = None,
     ) -> None:
         assert split in ("train", "val", "test"), f"split must be train/val/test, got {split}"
 
@@ -60,23 +49,9 @@ class CityscapesDataset(Dataset):
         self.ignore_index = int(ignore_index)
         self.training = bool(training)
 
-        train_cfg = _build_default_train_preprocess()
-        if train_preprocess is not None:
-            train_cfg.update(train_preprocess)
-
-        eval_cfg = _build_default_eval_preprocess()
-        if eval_preprocess is not None:
-            eval_cfg.update(eval_preprocess)
-
-        self.train_preprocess = train_cfg
-        self.eval_preprocess = eval_cfg
-
-        self.hflip_prob = float(self.train_preprocess["hflip_prob"])
-        self.multi_scale_range = (
-            float(self.train_preprocess["multi_scale_range"][0]),
-            float(self.train_preprocess["multi_scale_range"][1]),
-        )
-        self.random_crop_size = self.train_preprocess["random_crop_size"]
+        self.hflip_prob = float(hflip_prob)
+        self.multi_scale_range = (float(multi_scale_range[0]), float(multi_scale_range[1]))
+        self.random_crop_size = random_crop_size
 
         self.images_root = self.root / "leftImg8bit" / split
         self.labels_root = self.root / "gtFine" / split
@@ -153,10 +128,6 @@ class CityscapesDataset(Dataset):
         img_t = normalize_img(img_t)
         mask_t = torch.from_numpy(mask_new.astype(np.int64))
 
-        # include city in name to avoid collisions in visualization outputs
         rel_name = str(img_path.relative_to(self.images_root))
         return img_t, mask_t, rel_name
 
-
-# backward compatibility alias
-CamVidFolderDataset = CityscapesDataset
