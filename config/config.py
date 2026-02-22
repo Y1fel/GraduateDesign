@@ -14,10 +14,10 @@ class TrainConfig:
     ignore_index: int = 255
 
     epochs: int = 100
-    batch_size: int = 8
+    batch_size: int = 16
     num_workers: int = 4
     # Fixed learning rate.
-    lr_0: float = 1e-4
+    lr_0: float = 3e-4
     weight_decay: float = 1e-4
     # Freeze BN only for small-batch settings after stability is verified.
     freeze_bn: bool = False
@@ -31,8 +31,8 @@ class TrainConfig:
 
     resize_h: int = 1024
     resize_w: int = 2048
-    crop_h: int = 512
-    crop_w: int = 512
+    crop_h: int = 768
+    crop_w: int = 768
     train_multi_scale_min: float = 1.0
     train_multi_scale_max: float = 1.0
     hflip_prob: float = 0.5
