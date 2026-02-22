@@ -11,7 +11,7 @@ from src.commom.repro import set_seed
 from src.datasets.cityscapes import CityscapesDataset
 from src.eval.mIoU import compute_segmentation_metrics
 from src.models.deeplabv3_plus import DeepLabV3Plus
-from src.datasets.cityscapes_labels import CITYSCAPES_19_CLASS_NAMES, CITYSCAPES_19_ID2COLOR
+from src.datasets.cityscapes_labels import CITYSCAPES_34_CLASS_NAMES, CITYSCAPES_34_ID2COLOR
 from src.viz.visualizer import save_predictions_triplet
 from config.config import TrainConfig
 
@@ -130,8 +130,8 @@ def main() -> None:
     amp_enabled = bool(cfg.use_amp and device.type == "cuda")
     print(f"[INFO] AMP enabled = {amp_enabled}")
 
-    id2name = {idx: name for idx, name in enumerate(CITYSCAPES_19_CLASS_NAMES)}
-    id2color_vis = CITYSCAPES_19_ID2COLOR
+    id2name = {idx: name for idx, name in enumerate(CITYSCAPES_34_CLASS_NAMES)}
+    id2color_vis = CITYSCAPES_34_ID2COLOR
 
     out = OutputManager(cfg.outputs_root, exp_name="cityscapes_deeplabv3plus")
     out.save_config(cfg)

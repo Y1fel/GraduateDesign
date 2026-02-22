@@ -21,11 +21,11 @@ class CityscapesDataset(Dataset):
     Expected root structure:
       root/
         leftImg8bit/{train,val,test}/<city>/*_leftImg8bit.png
-        gtFine/{train,val}/<city>/*_gtFine_labelTrainIds.png
+        gtFine/{train,val}/<city>/*_gtFine_labelIds.png
 
     Note:
       - split=test has no public gt labels, so training/eval should use train/val.
-      - masks are single-channel trainId maps in [0,18] with ignored pixels usually 255.
+      - masks are single-channel labelId maps in [0,33] with ignored pixels usually 255.
     """
 
     def __init__(
@@ -130,4 +130,3 @@ class CityscapesDataset(Dataset):
 
         rel_name = str(img_path.relative_to(self.images_root))
         return img_t, mask_t, rel_name
-
