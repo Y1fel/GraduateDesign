@@ -16,8 +16,8 @@ class TrainConfig:
     epochs: int = 100
     batch_size: int = 8
     num_workers: int = 4
-    # Keep SGD but use a segmentation-typical base LR; tune within [1e-3, 1e-2].
-    lr_0: float = 1e-3
+    # Fixed learning rate.
+    lr_0: float = 1e-4
     weight_decay: float = 1e-4
     # Freeze BN only for small-batch settings after stability is verified.
     freeze_bn: bool = False

@@ -43,13 +43,9 @@ def train_one_epoch(
     optimizer,
     criterion,
     device,
-    epoch: int,
-    total_iters: int,
-    base_lr: float,
     use_amp: bool,
     num_classes: int,
     freeze_bn_enabled: bool,
-    power: float = 0.9,
 ) -> dict:
     model.train()
     if freeze_bn_enabled:
@@ -60,12 +56,7 @@ def train_one_epoch(
     grad_norm_sum = 0.0
     grad_steps = 0
 
-    for it, (imgs, masks, _names) in enumerate(loader):
-        global_step = (epoch - 1) * len(loader) + it
-        lr = base_lr * (1 - global_step / total_iters) ** power
-        for pg in optimizer.param_groups:
-            pg["lr"] = lr
-
+    for _it, (imgs, masks, _names) in enumerate(loader):
         imgs = imgs.to(device, non_blocking=True)
         masks = masks.to(device, non_blocking=True)
 
@@ -232,7 +223,6 @@ def main() -> None:
     best_val_loss = float("inf")
 
     for epoch in range(1, cfg.epochs + 1):
-        total_iters = cfg.epochs * len(train_loader)
         t0 = time.time()
 
         train_stats = train_one_epoch(
@@ -241,9 +231,6 @@ def main() -> None:
             optimizer,
             criterion,
             device,
-            epoch=epoch,
-            total_iters=total_iters,
-            base_lr=cfg.lr_0,
             use_amp=amp_enabled,
             num_classes=cfg.num_classes,
             freeze_bn_enabled=cfg.freeze_bn,
