@@ -23,6 +23,20 @@ def freeze_bn(model):
             m.weight.requires_grad = False
             m.bias.requires_grad = False
 
+
+def _accumulate_pred_hist(pred: torch.Tensor, hist: torch.Tensor, num_classes: int) -> None:
+    bins = torch.bincount(pred.view(-1), minlength=num_classes)
+    hist += bins.to(hist.device, dtype=hist.dtype)
+
+
+def _compute_grad_norm(model: nn.Module) -> float:
+    total = 0.0
+    for p in model.parameters():
+        if p.grad is not None:
+            g = p.grad.detach().float().norm(2).item()
+            total += g * g
+    return total ** 0.5
+
 def train_one_epoch(
     model,
     loader,
@@ -33,12 +47,18 @@ def train_one_epoch(
     total_iters: int,
     base_lr: float,
     use_amp: bool,
+    num_classes: int,
+    freeze_bn_enabled: bool,
     power: float = 0.9,
-) -> float:
+) -> dict:
     model.train()
-    freeze_bn(model)
+    if freeze_bn_enabled:
+        freeze_bn(model)
     total_loss, n = 0.0, 0
-    scaler = torch.amp.GradScaler('cuda',enabled=use_amp)
+    scaler = torch.amp.GradScaler('cuda', enabled=use_amp)
+    pred_hist = torch.zeros(num_classes, dtype=torch.int64, device=device)
+    grad_norm_sum = 0.0
+    grad_steps = 0
 
     for it, (imgs, masks, _names) in enumerate(loader):
         global_step = (epoch - 1) * len(loader) + it
@@ -56,14 +76,25 @@ def train_one_epoch(
             loss = criterion(logits, masks)
 
         scaler.scale(loss).backward()
+        if use_amp:
+            scaler.unscale_(optimizer)
+        grad_norm_sum += _compute_grad_norm(model)
+        grad_steps += 1
         scaler.step(optimizer)
         scaler.update()
+
+        pred = torch.argmax(logits.detach(), dim=1)
+        _accumulate_pred_hist(pred, pred_hist, num_classes=num_classes)
 
         bs = imgs.size(0)
         total_loss += loss.item() * bs
         n += bs
 
-    return total_loss / max(n, 1)
+    return {
+        "loss": total_loss / max(n, 1),
+        "pred_hist": pred_hist.detach().cpu(),
+        "avg_grad_norm": grad_norm_sum / max(grad_steps, 1),
+    }
 
 
 @torch.inference_mode()
@@ -194,6 +225,8 @@ def main() -> None:
         weight_decay=cfg.weight_decay,
         nesterov=True,
     )
+    print(f"[INFO] Optimizer = SGD (lr_0={cfg.lr_0:.2e}, momentum=0.9, nesterov=True)")
+    print(f"[INFO] freeze_bn = {cfg.freeze_bn}")
 
     best_miou = -1.0
     best_val_loss = float("inf")
@@ -202,7 +235,7 @@ def main() -> None:
         total_iters = cfg.epochs * len(train_loader)
         t0 = time.time()
 
-        train_loss = train_one_epoch(
+        train_stats = train_one_epoch(
             model,
             train_loader,
             optimizer,
@@ -212,21 +245,46 @@ def main() -> None:
             total_iters=total_iters,
             base_lr=cfg.lr_0,
             use_amp=amp_enabled,
+            num_classes=cfg.num_classes,
+            freeze_bn_enabled=cfg.freeze_bn,
         )
+        train_loss = float(train_stats["loss"])
         val_loss = evaluate_loss(model, val_loader, criterion, device, use_amp=amp_enabled)
         val_metrics = compute_segmentation_metrics(model, val_loader, device, cfg.num_classes, cfg.ignore_index)
         val_miou = float(val_metrics["miou"])
+        recall_per_class = val_metrics["recall_per_class"]
+        effective_mask = [not math.isnan(float(v)) for v in recall_per_class]
+        effective_ious = [
+            float(val_metrics["iou_per_class"][i])
+            for i, ok in enumerate(effective_mask)
+            if ok and not math.isnan(float(val_metrics["iou_per_class"][i]))
+        ]
+        val_miou_effective = float(sum(effective_ious) / len(effective_ious)) if effective_ious else float("nan")
 
         iou_per_class = val_metrics["iou_per_class"]
         precision_per_class = val_metrics["precision_per_class"]
-        recall_per_class = val_metrics["recall_per_class"]
-
         dt = time.time() - t0
+        pred_hist = train_stats["pred_hist"]
+        pred_total = int(pred_hist.sum().item())
+        dominant_ratio = float(pred_hist.max().item() / pred_total) if pred_total > 0 else 0.0
+        dominant_class = int(torch.argmax(pred_hist).item()) if pred_total > 0 else -1
+
         print(
             f"[EPOCH {epoch:03d}/{cfg.epochs}] train_loss={train_loss:.4f} "
-            f"val_loss={val_loss:.4f} val_mIoU={val_miou:.4f} "
-            f"val_BF1={val_metrics['boundary_fscore']:.4f} val_TrimapIoU={val_metrics['trimap_iou']:.4f} time={dt:.1f}s"
+            f"val_loss={val_loss:.4f} val_mIoU(all)={val_miou:.4f} val_mIoU(effective)={val_miou_effective:.4f} "
+            f"val_BF1={val_metrics['boundary_fscore']:.4f} val_TrimapIoU={val_metrics['trimap_iou']:.4f} "
+            f"grad_norm(avg)={train_stats['avg_grad_norm']:.4f} time={dt:.1f}s"
         )
+        print(f"[TRAIN-PRED-HIST] counts={pred_hist.tolist()}")
+        print(
+            f"[TRAIN-PRED-HIST] dominant_class={dominant_class} dominant_ratio={dominant_ratio:.4f} "
+            f"warn_threshold={cfg.dominant_class_warn_ratio:.2f}"
+        )
+        if dominant_ratio >= cfg.dominant_class_warn_ratio:
+            print(
+                "[ALERT] Predicted class distribution is highly imbalanced: "
+                f"class={dominant_class}, ratio={dominant_ratio:.4f}."
+            )
         print("[PER-CLASS] class_id class_name iou precision recall")
         per_class_rows = []
         for class_id in range(cfg.num_classes):
@@ -259,7 +317,7 @@ def main() -> None:
             epoch=epoch,
             train_loss=train_loss,
             val_loss=val_loss,
-            val_miou=val_miou,
+            val_miou=val_miou_effective,
             val_bf1=float(val_metrics["boundary_fscore"]),
             dt=dt,
         )
@@ -287,8 +345,8 @@ def main() -> None:
         if (not math.isnan(val_loss)) and (val_loss < best_val_loss):
             best_val_loss = val_loss
 
-        if (not math.isnan(val_miou)) and (val_miou > best_miou):
-            best_miou = val_miou
+        if (not math.isnan(val_miou_effective)) and (val_miou_effective > best_miou):
+            best_miou = val_miou_effective
             ckpt["best_miou"] = best_miou
             ckpt["best_val_loss"] = best_val_loss
             torch.save(ckpt, out.ckpt_dir / "best.pth")
