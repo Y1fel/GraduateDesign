@@ -3,6 +3,7 @@ import time
 from pathlib import Path
 
 import torch
+from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader
 import torch.nn as nn
 
@@ -202,6 +203,8 @@ def main() -> None:
         backbone_pretrained=cfg.backbone_pretrained,
         output_stride=cfg.output_stride,
         head_norm=cfg.head_norm,
+        aspp_dropout=cfg.aspp_dropout,
+        decoder_dropout=cfg.decoder_dropout,
     ).to(device)
 
     criterion = torch.nn.CrossEntropyLoss(
@@ -216,7 +219,9 @@ def main() -> None:
         weight_decay=cfg.weight_decay,
         nesterov=True,
     )
-    print(f"[INFO] Optimizer = SGD (lr_0={cfg.lr_0:.2e}, momentum=0.9, nesterov=True)")
+    print(f"[INFO] Optimizer = SGD (lr_0={cfg.lr_0:.2e}, momentum=0.9, nesterov=True, weight_decay={cfg.weight_decay:.2e})")
+    scheduler = CosineAnnealingLR(optimizer, T_max=cfg.epochs, eta_min=cfg.lr_eta_min)
+    print(f"[INFO] Scheduler = CosineAnnealingLR (T_max={cfg.epochs}, eta_min={cfg.lr_eta_min:.2e})")
     print(f"[INFO] freeze_bn = {cfg.freeze_bn}")
 
     best_miou = -1.0
@@ -353,6 +358,7 @@ def main() -> None:
                 best_ckpt_path=out.ckpt_dir / "best.pth",
             )
 
+        scheduler.step()
         cur_lr = optimizer.param_groups[0]["lr"]
         print(f"... lr={cur_lr:.6f}")
 
