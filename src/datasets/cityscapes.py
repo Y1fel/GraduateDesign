@@ -40,6 +40,8 @@ class CityscapesDataset(Dataset):
         hflip_prob: float = 0.0,
         multi_scale_range: Tuple[float, float] = (1.0, 1.0),
         random_crop_size: Optional[Tuple[int, int]] = None,
+        crop_retry: int = 1,
+        crop_max_class_ratio: float = 1.0,
         remap_to_19: bool = True,
     ) -> None:
         assert split in ("train", "val", "test"), f"split must be train/val/test, got {split}"
@@ -54,6 +56,8 @@ class CityscapesDataset(Dataset):
         self.hflip_prob = float(hflip_prob)
         self.multi_scale_range = (float(multi_scale_range[0]), float(multi_scale_range[1]))
         self.random_crop_size = random_crop_size
+        self.crop_retry = max(1, int(crop_retry))
+        self.crop_max_class_ratio = float(crop_max_class_ratio)
         self.remap_to_19 = bool(remap_to_19)
         self._label_id_to_train_id = np.asarray(CITYSCAPES_34_TO_19, dtype=np.uint8)
 
@@ -96,12 +100,15 @@ class CityscapesDataset(Dataset):
             mask_path = self._resolve_mask(img_path)
             mask_id = Image.open(mask_path).convert("L")
 
-        img, mask_id = resize_pair(img, mask_id, (self.resize_w, self.resize_h))
-
         if self.training:
+            base_w = max(img.width, self.resize_w)
+            base_h = max(img.height, self.resize_h)
+            img, mask_id = resize_pair(img, mask_id, (base_w, base_h))
             if self.multi_scale_range != (1.0, 1.0):
                 img, mask_id = random_scale_pair(img, mask_id, self.multi_scale_range)
             img, mask_id = maybe_hflip_pair(img, mask_id, self.hflip_prob)
+        else:
+            img, mask_id = resize_pair(img, mask_id, (self.resize_w, self.resize_h))
 
         mask_new = np.asarray(mask_id, dtype=np.uint8)
         if self.remap_to_19:
@@ -127,10 +134,27 @@ class CityscapesDataset(Dataset):
                 )
                 h, w = img_np.shape[:2]
 
-            y1 = np.random.randint(0, h - crop_h + 1)
-            x1 = np.random.randint(0, w - crop_w + 1)
-            img_np = img_np[y1:y1 + crop_h, x1:x1 + crop_w]
-            mask_new = mask_new[y1:y1 + crop_h, x1:x1 + crop_w]
+            crop_img = None
+            crop_mask = None
+            for _ in range(self.crop_retry):
+                y1 = np.random.randint(0, h - crop_h + 1)
+                x1 = np.random.randint(0, w - crop_w + 1)
+                candidate_img = img_np[y1:y1 + crop_h, x1:x1 + crop_w]
+                candidate_mask = mask_new[y1:y1 + crop_h, x1:x1 + crop_w]
+
+                valid = candidate_mask != self.ignore_index
+                if not np.any(valid):
+                    crop_img, crop_mask = candidate_img, candidate_mask
+                    break
+
+                _, counts = np.unique(candidate_mask[valid], return_counts=True)
+                max_ratio = float(counts.max() / counts.sum())
+                crop_img, crop_mask = candidate_img, candidate_mask
+                if max_ratio < self.crop_max_class_ratio:
+                    break
+
+            img_np = crop_img
+            mask_new = crop_mask
             img = Image.fromarray(img_np, mode="RGB")
 
         img_t = pil_to_tensor(img)

@@ -21,6 +21,10 @@ class TrainConfig:
     lr_0: float = 2.5e-4
     weight_decay: float = 1e-3
     lr_eta_min: float = 1e-6
+    lr_policy: str = "poly"
+    poly_power: float = 0.9
+    warmup_iters: int = 1500
+    warmup_ratio: float = 0.1
     # Freeze BN only for small-batch settings after stability is verified.
     freeze_bn: bool = False
     dominant_class_warn_ratio: float = 0.9
@@ -33,7 +37,9 @@ class TrainConfig:
 
     output_stride: int = 16
     backbone_pretrained: bool = True
+    # Recommended: single-card -> head_norm="bn", use_syncbn=False; multi-card DDP -> head_norm="syncbn", use_syncbn=True.
     head_norm: NormType = "bn"
+    use_syncbn: bool = False
     aspp_dropout: float = 0.1
     decoder_dropout: float = 0.2
 
@@ -41,6 +47,8 @@ class TrainConfig:
     resize_w: int = 2048
     crop_h: int = 896
     crop_w: int = 896
+    crop_retry: int = 10
+    crop_max_class_ratio: float = 0.75
     train_multi_scale_min: float = 0.5
     train_multi_scale_max: float = 2
     hflip_prob: float = 0.5

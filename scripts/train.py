@@ -4,7 +4,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from torch.optim.lr_scheduler import CosineAnnealingLR
+from torch.nn.modules.batchnorm import _BatchNorm
 from torch.utils.data import DataLoader, WeightedRandomSampler
 import torch.nn as nn
 from PIL import Image
@@ -23,10 +23,12 @@ from src.losses.combined_loss import CombinedCEFocalLoss
 
 def freeze_bn(model):
     for m in model.modules():
-        if isinstance(m, nn.BatchNorm2d):
+        if isinstance(m, _BatchNorm):
             m.eval()
-            m.weight.requires_grad = False
-            m.bias.requires_grad = False
+            if m.weight is not None:
+                m.weight.requires_grad = False
+            if m.bias is not None:
+                m.bias.requires_grad = False
 
 
 def _accumulate_pred_hist(pred: torch.Tensor, hist: torch.Tensor, num_classes: int) -> None:
@@ -86,6 +88,42 @@ def _compute_class_weights(train_ds: CityscapesDataset, cfg: TrainConfig) -> tor
     inv = np.clip(inv, float(cfg.class_weight_min), float(cfg.class_weight_max))
     return torch.tensor(inv, dtype=torch.float32)
 
+
+
+def _compute_lr_at_iter(global_iter: int, max_iter: int, cfg: TrainConfig) -> float:
+    if max_iter <= 0:
+        raise ValueError(f"max_iter must be positive, got {max_iter}")
+
+    warmup_iters = max(0, int(cfg.warmup_iters))
+    warmup_ratio = float(cfg.warmup_ratio)
+    base_lr = float(cfg.lr_0)
+    eta_min = float(cfg.lr_eta_min)
+    policy = str(cfg.lr_policy).lower()
+
+    if warmup_iters > 0 and global_iter < warmup_iters:
+        alpha = float(global_iter + 1) / float(warmup_iters)
+        warmup_scale = warmup_ratio + (1.0 - warmup_ratio) * alpha
+        return base_lr * warmup_scale
+
+    progress_iter = global_iter - warmup_iters
+    progress_total = max(1, max_iter - warmup_iters)
+    progress = min(max(progress_iter / progress_total, 0.0), 1.0)
+
+    if policy == "poly":
+        lr = base_lr * ((1.0 - progress) ** float(cfg.poly_power))
+        return max(eta_min, lr)
+    if policy == "cosine":
+        cosine = 0.5 * (1.0 + math.cos(math.pi * progress))
+        lr = eta_min + (base_lr - eta_min) * cosine
+        return max(eta_min, lr)
+
+    raise ValueError(f"Unsupported lr_policy: {cfg.lr_policy}. Use 'poly' or 'cosine'.")
+
+
+def _set_optimizer_lr(optimizer: torch.optim.Optimizer, lr: float) -> None:
+    for param_group in optimizer.param_groups:
+        param_group["lr"] = float(lr)
+
 def train_one_epoch(
     model,
     loader,
@@ -95,6 +133,9 @@ def train_one_epoch(
     use_amp: bool,
     num_classes: int,
     freeze_bn_enabled: bool,
+    cfg: TrainConfig,
+    global_iter_start: int,
+    max_iter: int,
 ) -> dict:
     model.train()
     if freeze_bn_enabled:
@@ -109,6 +150,10 @@ def train_one_epoch(
     loop_t = time.perf_counter()
 
     for _it, (imgs, masks, _names) in enumerate(loader):
+        global_iter = global_iter_start + _it
+        lr_now = _compute_lr_at_iter(global_iter=global_iter, max_iter=max_iter, cfg=cfg)
+        _set_optimizer_lr(optimizer, lr_now)
+
         data_time_sum += time.perf_counter() - loop_t
         iter_t = time.perf_counter()
         imgs = imgs.to(device, non_blocking=True)
@@ -143,6 +188,8 @@ def train_one_epoch(
         "avg_grad_norm": grad_norm_sum / max(grad_steps, 1),
         "avg_data_time": data_time_sum / max(grad_steps, 1),
         "avg_compute_time": iter_compute_time_sum / max(grad_steps, 1),
+        "last_lr": optimizer.param_groups[0]["lr"],
+        "iters": grad_steps,
     }
 
 
@@ -233,6 +280,8 @@ def main() -> None:
         hflip_prob=cfg.hflip_prob,
         multi_scale_range=(cfg.train_multi_scale_min, cfg.train_multi_scale_max),
         random_crop_size=(cfg.crop_w, cfg.crop_h),
+        crop_retry=cfg.crop_retry,
+        crop_max_class_ratio=cfg.crop_max_class_ratio,
     )
     val_ds = CityscapesDataset(
         root=cfg.data_root,
@@ -282,7 +331,17 @@ def main() -> None:
         head_norm=cfg.head_norm,
         aspp_dropout=cfg.aspp_dropout,
         decoder_dropout=cfg.decoder_dropout,
-    ).to(device)
+    )
+
+    dist_ready = (
+        torch.distributed.is_available()
+        and torch.distributed.is_initialized()
+        and torch.distributed.get_world_size() > 1
+    )
+    if cfg.use_syncbn and dist_ready:
+        model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
+
+    model = model.to(device)
 
     criterion = CombinedCEFocalLoss(
         ce_weight=cfg.ce_weight,
@@ -307,9 +366,22 @@ def main() -> None:
         nesterov=True,
     )
     print(f"[INFO] Optimizer = SGD (lr_0={cfg.lr_0:.2e}, momentum=0.9, nesterov=True, weight_decay={cfg.weight_decay:.2e})")
-    scheduler = CosineAnnealingLR(optimizer, T_max=cfg.epochs, eta_min=cfg.lr_eta_min)
-    print(f"[INFO] Scheduler = CosineAnnealingLR (T_max={cfg.epochs}, eta_min={cfg.lr_eta_min:.2e})")
-    print(f"[INFO] freeze_bn = {cfg.freeze_bn}")
+    policy = str(cfg.lr_policy).lower()
+    if policy not in {"poly", "cosine"}:
+        raise ValueError(f"Unsupported lr_policy: {cfg.lr_policy}. Use 'poly' or 'cosine'.")
+    max_iter = cfg.epochs * len(train_loader)
+    print(
+        "[INFO] LR scheduler = "
+        f"{policy} (iter-based, max_iter={max_iter}, warmup_iters={cfg.warmup_iters}, "
+        f"warmup_ratio={cfg.warmup_ratio:.3f}, poly_power={cfg.poly_power:.3f}, eta_min={cfg.lr_eta_min:.2e})"
+    )
+    print(
+        "[INFO] norm_strategy="
+        f"head_norm={cfg.head_norm}, use_syncbn={cfg.use_syncbn}, "
+        f"syncbn_converted={bool(cfg.use_syncbn and dist_ready)}, freeze_bn={cfg.freeze_bn}"
+    )
+    if cfg.use_syncbn and not dist_ready:
+        print("[INFO] SyncBatchNorm conversion skipped: distributed process group is unavailable or world_size<=1.")
 
     best_miou = -1.0
     best_val_loss = float("inf")
@@ -319,6 +391,7 @@ def main() -> None:
             torch.cuda.empty_cache()
         t0 = time.time()
 
+        global_iter_start = (epoch - 1) * len(train_loader)
         train_stats = train_one_epoch(
             model,
             train_loader,
@@ -328,6 +401,9 @@ def main() -> None:
             use_amp=amp_enabled,
             num_classes=cfg.num_classes,
             freeze_bn_enabled=cfg.freeze_bn,
+            cfg=cfg,
+            global_iter_start=global_iter_start,
+            max_iter=max_iter,
         )
         train_loss = float(train_stats["loss"])
         val_loss = evaluate_loss(model, val_loader, criterion, device, use_amp=amp_enabled)
@@ -362,7 +438,7 @@ def main() -> None:
             f"val_loss={val_loss:.4f} val_mIoU(all)={val_miou:.4f} val_mIoU(effective)={val_miou_effective:.4f} "
             f"val_BF1={val_metrics['boundary_fscore']:.4f} val_TrimapIoU={val_metrics['trimap_iou']:.4f} "
             f"data_t={train_stats['avg_data_time']:.3f}s iter_t={train_stats['avg_compute_time']:.3f}s "
-            f"grad_norm(avg)={train_stats['avg_grad_norm']:.4f} time={dt:.1f}s"
+            f"grad_norm(avg)={train_stats['avg_grad_norm']:.4f} lr={float(train_stats['last_lr']):.8f} time={dt:.1f}s"
         )
         print(f"[TRAIN-PRED-HIST] counts={pred_hist.tolist()}")
         print(
@@ -408,6 +484,7 @@ def main() -> None:
             val_loss=val_loss,
             val_miou=val_miou_effective,
             val_bf1=float(val_metrics["boundary_fscore"]),
+            lr=float(train_stats["last_lr"]),
             dt=dt,
         )
         for class_id, class_name, iou_val, precision_val, recall_val in per_class_rows:
@@ -455,9 +532,7 @@ def main() -> None:
                 best_ckpt_path=out.ckpt_dir / "best.pth",
             )
 
-        scheduler.step()
-        cur_lr = optimizer.param_groups[0]["lr"]
-        print(f"... lr={cur_lr:.6f}")
+        print(f"... lr={float(train_stats['last_lr']):.8f}")
 
 
     print("[DONE] Training finished.")
