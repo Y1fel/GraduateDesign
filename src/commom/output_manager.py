@@ -40,6 +40,7 @@ class OutputManager:
                     "val_loss",
                     "val_miou",
                     "val_bf1",
+                    "lr",
                     "time_sec",
                 ])
 
@@ -55,6 +56,7 @@ class OutputManager:
         val_loss: float,
         val_miou: float,
         val_bf1: float,
+        lr: float,
         dt: float,
     ) -> None:
         with self.metrics_csv.open("a", newline="", encoding="utf-8") as f:
@@ -65,6 +67,7 @@ class OutputManager:
                 f"{val_loss:.6f}",
                 f"{val_miou:.6f}",
                 f"{val_bf1:.6f}",
+                f"{lr:.8f}",
                 f"{dt:.2f}",
             ])
 
