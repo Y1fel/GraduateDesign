@@ -52,6 +52,8 @@ class TrainConfig:
     eval_multi_scale: bool = True
     eval_scales: tuple[float, ...] = (0.75, 1.0, 1.25)
     eval_flip: bool = True
+    # Multi-scale+flip validation is expensive; run it every N epochs.
+    eval_multi_scale_every: int = 5
 
     save_vis_every: int = 50
     save_vis_max_items: int = 10

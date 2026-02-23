@@ -366,6 +366,11 @@ def main() -> None:
         f"{policy} (iter-based, max_iter={max_iter}, warmup_iters={cfg.warmup_iters}, "
         f"warmup_ratio={cfg.warmup_ratio:.3f}, poly_power={cfg.poly_power:.3f}, eta_min={cfg.lr_eta_min:.2e})"
     )
+    if cfg.eval_multi_scale:
+        print(
+            "[INFO] Eval-TTA schedule = "
+            f"every {cfg.eval_multi_scale_every} epochs (+first/+last), scales={list(cfg.eval_scales)}, flip={cfg.eval_flip}"
+        )
     print(f"[INFO] norm_strategy=freeze_bn={cfg.freeze_bn}")
 
     best_miou = -1.0
@@ -402,8 +407,17 @@ def main() -> None:
             scales=[1.0],
             flip=False,
         )
+
+        run_tta_eval = (
+            cfg.eval_multi_scale
+            and (
+                epoch == 1
+                or epoch == cfg.epochs
+                or (cfg.eval_multi_scale_every > 0 and epoch % cfg.eval_multi_scale_every == 0)
+            )
+        )
         val_metrics = val_metrics_single
-        if cfg.eval_multi_scale:
+        if run_tta_eval:
             val_metrics = compute_segmentation_metrics(
                 model,
                 val_loader,
@@ -435,7 +449,7 @@ def main() -> None:
 
         eval_mode = (
             f"ms+flip(scales={list(cfg.eval_scales)}, flip={cfg.eval_flip})"
-            if cfg.eval_multi_scale
+            if run_tta_eval
             else "single-scale"
         )
         print(
