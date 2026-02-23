@@ -12,8 +12,10 @@ def update_confusion_matrix(
     num_classes: int,
     ignore_index: int,
 ) -> None:
-    pred = pred.view(-1)
-    target = target.view(-1)
+    # `pred` / `target` may be non-contiguous after post-processing.
+    # `reshape` keeps this robust by materializing a contiguous view when needed.
+    pred = pred.reshape(-1)
+    target = target.reshape(-1)
 
     m = target != ignore_index
     pred = pred[m]
@@ -108,6 +110,8 @@ def compute_segmentation_metrics(
     boundary_dilation: int = 2,
     trimap_width: int = 3,
     postprocess_fn: Callable[[torch.Tensor], torch.Tensor] | None = None,
+    criterion=None,
+    use_amp: bool = False,
 ) -> dict:
     model.eval()
     conf = torch.zeros((num_classes, num_classes), dtype=torch.int64, device=device)
@@ -116,12 +120,19 @@ def compute_segmentation_metrics(
     bf_precisions = []
     bf_recalls = []
     trimap_ious = []
+    total_loss = 0.0
+    total_samples = 0
 
     for imgs, masks, _names in loader:
         imgs = imgs.to(device, non_blocking=True)
         masks = masks.to(device, non_blocking=True)
 
-        logits = model(imgs)
+        with torch.amp.autocast('cuda', enabled=bool(use_amp and device.type == "cuda")):
+            logits = model(imgs)
+            if criterion is not None:
+                loss = criterion(logits, masks)
+                total_loss += float(loss.item()) * imgs.size(0)
+                total_samples += imgs.size(0)
         pred = torch.argmax(logits, dim=1)
         if postprocess_fn is not None:
             pred = postprocess_fn(pred)
@@ -154,7 +165,7 @@ def compute_segmentation_metrics(
     precision[pre_valid] = tp[pre_valid] / precision_denom[pre_valid]
 
     miou = float(np.nanmean(iou)) if np.any(iou_valid) else float("nan")
-    return {
+    metrics = {
         "miou": miou,
         "iou_per_class": iou,
         "recall_per_class": recall,
@@ -164,6 +175,9 @@ def compute_segmentation_metrics(
         "boundary_recall": float(np.nanmean(np.array(bf_recalls, dtype=np.float64))) if bf_recalls else float("nan"),
         "trimap_iou": float(np.nanmean(np.array(trimap_ious, dtype=np.float64))) if trimap_ious else float("nan"),
     }
+    if criterion is not None:
+        metrics["loss"] = total_loss / max(total_samples, 1)
+    return metrics
 
 
 @torch.no_grad()
