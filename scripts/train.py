@@ -128,27 +128,6 @@ def train_one_epoch(
 
 
 @torch.inference_mode()
-def evaluate_loss(model, loader, criterion, device, use_amp: bool) -> float:
-    model.eval()
-    total_loss = 0.0
-    n = 0
-
-    for imgs, masks, _names in loader:
-        imgs = imgs.to(device, non_blocking=True)
-        masks = masks.to(device, non_blocking=True)
-
-        with torch.amp.autocast('cuda',enabled=use_amp):
-            logits = model(imgs)
-            loss = criterion(logits, masks)
-
-        bs = imgs.size(0)
-        total_loss += loss.item() * bs
-        n += bs
-
-    return total_loss / max(n, 1)
-
-
-@torch.inference_mode()
 def save_vis_using_best_ckpt(
     model,
     val_loader,
@@ -200,6 +179,7 @@ def main() -> None:
         torch.backends.cudnn.benchmark = True
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
+        torch.set_float32_matmul_precision("high")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[INFO] device = {device}")
@@ -311,13 +291,14 @@ def main() -> None:
             freeze_bn_enabled=cfg.freeze_bn,
         )
         train_loss = float(train_stats["loss"])
-        val_loss = evaluate_loss(model, val_loader, criterion, device, use_amp=amp_enabled)
         val_metrics = compute_segmentation_metrics(
             model,
             val_loader,
             device,
             cfg.num_classes,
             cfg.ignore_index,
+            criterion=criterion,
+            use_amp=amp_enabled,
             postprocess_fn=(
                 lambda x: postprocess_prediction(
                     x,
@@ -330,6 +311,7 @@ def main() -> None:
                 else None
             ),
         )
+        val_loss = float(val_metrics["loss"])
         val_miou = float(val_metrics["miou"])
         recall_per_class = val_metrics["recall_per_class"]
         effective_mask = [not math.isnan(float(v)) for v in recall_per_class]

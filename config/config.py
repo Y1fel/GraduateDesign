@@ -15,10 +15,10 @@ class TrainConfig:
     ignore_index: int = 255
 
     epochs: int = 100
-    batch_size: int = 16
-    num_workers: int = 4
+    batch_size: int = 12
+    num_workers: int = 12
     persistent_workers: bool = True
-    prefetch_factor: int = 4
+    prefetch_factor: int = 6
     lr_0: float = 3e-4
     weight_decay: float = 1e-3
     lr_eta_min: float = 1e-6
