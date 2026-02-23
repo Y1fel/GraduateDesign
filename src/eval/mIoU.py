@@ -136,7 +136,10 @@ def compute_segmentation_metrics(
         logits = model(imgs)
         pred = torch.argmax(logits, dim=1)
         if postprocess_fn is not None:
-            pred = postprocess_fn(pred)
+            processed_pred = postprocess_fn(pred)
+            if processed_pred is None:
+                processed_pred = pred
+            pred = processed_pred
         update_confusion_matrix(conf, pred, masks, num_classes, ignore_index)
 
         bf, bp, br = _boundary_fscore(pred, masks, ignore_index=ignore_index, dilation=boundary_dilation)
