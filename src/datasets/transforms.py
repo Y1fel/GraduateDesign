@@ -5,13 +5,17 @@ import numpy as np
 import torch
 from PIL import Image
 
+from src.commom.constants import IMAGENET_MEAN, IMAGENET_STD
+
 
 def normalize_img(img_t: torch.Tensor) -> torch.Tensor:
     """
+    Normalize image tensor with ImageNet statistics.
     img_t: (3,H,W), float in [0,1]
     """
-    mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
-    std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
+    # Pair with save_predictions_triplet denormalization in src/viz/visualizer.py
+    mean = torch.tensor(IMAGENET_MEAN, dtype=img_t.dtype, device=img_t.device).view(3, 1, 1)
+    std = torch.tensor(IMAGENET_STD, dtype=img_t.dtype, device=img_t.device).view(3, 1, 1)
     return (img_t - mean) / std
 
 

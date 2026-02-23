@@ -65,7 +65,6 @@ class TrainConfig:
     # Keep eval off by default to avoid CPU bottlenecks during validation.
     enable_postprocess_eval: bool = False
     enable_postprocess_vis: bool = True
-    enable_postprocess: bool = True
     postprocess_min_component_area: int = 20
     postprocess_filter: Literal["majority", "median"] = "majority"
     postprocess_kernel_size: int = 3

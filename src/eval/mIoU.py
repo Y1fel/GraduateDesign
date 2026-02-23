@@ -165,21 +165,3 @@ def compute_segmentation_metrics(
         "trimap_iou": float(np.nanmean(np.array(trimap_ious, dtype=np.float64))) if trimap_ious else float("nan"),
     }
 
-
-@torch.no_grad()
-def compute_miou(
-    model,
-    loader,
-    device: torch.device,
-    num_classes: int,
-    ignore_index: int,
-) -> float:
-    return float(
-        compute_segmentation_metrics(
-            model=model,
-            loader=loader,
-            device=device,
-            num_classes=num_classes,
-            ignore_index=ignore_index,
-        )["miou"]
-    )

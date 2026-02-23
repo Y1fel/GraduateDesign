@@ -5,6 +5,7 @@ import numpy as np
 import torch
 from PIL import Image
 
+from src.commom.constants import IMAGENET_MEAN, IMAGENET_STD
 from src.utils.Id2Mask import id_mask_to_color
 
 RGB = Tuple[int, int, int]
@@ -56,10 +57,10 @@ def save_predictions_triplet(
             if saved >= max_items:
                 return
 
-            # de-normalize (approx)
+            # De-normalize image using the same ImageNet stats as normalize_img.
             img = imgs_cpu[i]
-            mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
-            std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
+            mean = torch.tensor(IMAGENET_MEAN, dtype=img.dtype, device=img.device).view(3, 1, 1)
+            std = torch.tensor(IMAGENET_STD, dtype=img.dtype, device=img.device).view(3, 1, 1)
             img = (img * std + mean).clamp(0, 1)
             img_np = (img.permute(1, 2, 0).numpy() * 255.0).astype(np.uint8)
 
