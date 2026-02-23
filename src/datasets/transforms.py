@@ -6,15 +6,13 @@ import torch
 from PIL import Image
 
 
-_IMAGENET_MEAN = torch.tensor([0.485, 0.456, 0.406], dtype=torch.float32).view(3, 1, 1)
-_IMAGENET_STD = torch.tensor([0.229, 0.224, 0.225], dtype=torch.float32).view(3, 1, 1)
-
-
 def normalize_img(img_t: torch.Tensor) -> torch.Tensor:
     """
     img_t: (3,H,W), float in [0,1]
     """
-    return (img_t - _IMAGENET_MEAN) / _IMAGENET_STD
+    mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
+    std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
+    return (img_t - mean) / std
 
 
 def pil_hflip(im: Image.Image) -> Image.Image:
