@@ -42,8 +42,8 @@ class TrainConfig:
     resize_w: int = 2048
     crop_h: int = 768
     crop_w: int = 768
-    train_multi_scale_min: float = 1.0
-    train_multi_scale_max: float = 1.0
+    train_multi_scale_min: float = 0.5
+    train_multi_scale_max: float = 2
     hflip_prob: float = 0.5
 
 
@@ -56,7 +56,7 @@ class TrainConfig:
 
     # Rare-class-aware sampling for long-tail classes.
     use_rare_class_sampler: bool = True
-    rare_class_ids: tuple[int, ...] = (14, 16, 17, 12)
+    rare_class_ids: tuple[int, ...] = (3, 5, 6, 7, 17, 15, 14)
     rare_class_weight_multiplier: float = 3.0
     sampler_num_samples_factor: float = 1.0
 
