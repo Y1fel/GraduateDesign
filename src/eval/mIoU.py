@@ -11,13 +11,25 @@ def update_confusion_matrix(
     target: torch.Tensor,
     num_classes: int,
     ignore_index: int,
+    debug_stats: dict[str, int] | None = None,
 ) -> None:
     pred = pred.view(-1)
     target = target.view(-1)
 
     m = target != ignore_index
-    pred = pred[m]
-    target = target[m]
+    target_in_range = (target >= 0) & (target < num_classes)
+    pred_in_range = (pred >= 0) & (pred < num_classes)
+    valid = m & target_in_range & pred_in_range
+
+    if debug_stats is not None:
+        debug_stats["total_pixels"] = debug_stats.get("total_pixels", 0) + int(target.numel())
+        debug_stats["ignored_pixels"] = debug_stats.get("ignored_pixels", 0) + int((~m).sum().item())
+        debug_stats["target_out_of_range"] = debug_stats.get("target_out_of_range", 0) + int((m & ~target_in_range).sum().item())
+        debug_stats["pred_out_of_range"] = debug_stats.get("pred_out_of_range", 0) + int((m & ~pred_in_range).sum().item())
+        debug_stats["kept_pixels"] = debug_stats.get("kept_pixels", 0) + int(valid.sum().item())
+
+    pred = pred[valid]
+    target = target[valid]
     if pred.numel() == 0:
         return
 
@@ -164,4 +176,3 @@ def compute_segmentation_metrics(
         "boundary_recall": float(np.nanmean(np.array(bf_recalls, dtype=np.float64))) if bf_recalls else float("nan"),
         "trimap_iou": float(np.nanmean(np.array(trimap_ious, dtype=np.float64))) if trimap_ious else float("nan"),
     }
-
