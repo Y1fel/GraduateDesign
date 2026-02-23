@@ -1,6 +1,5 @@
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
 
 from src.models.switch2Norm import NormType
 
@@ -64,10 +63,3 @@ class TrainConfig:
     ce_weight: float = 0.7
     focal_weight: float = 0.3
     focal_gamma: float = 2.0
-
-    # Inference post-processing.
-    # Keep eval off by default to avoid CPU bottlenecks during validation.
-    enable_postprocess_eval: bool = False
-    postprocess_min_component_area: int = 20
-    postprocess_filter: Literal["majority", "median"] = "majority"
-    postprocess_kernel_size: int = 3
