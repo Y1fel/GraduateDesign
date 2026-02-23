@@ -13,6 +13,9 @@ def update_confusion_matrix(
     ignore_index: int,
     debug_stats: dict[str, int] | None = None,
 ) -> None:
+    if pred is None:
+        raise ValueError("update_confusion_matrix got pred=None. Check postprocess_fn return value.")
+
     pred = pred.view(-1)
     target = target.view(-1)
 

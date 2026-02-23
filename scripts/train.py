@@ -312,23 +312,23 @@ def main() -> None:
         )
         train_loss = float(train_stats["loss"])
         val_loss = evaluate_loss(model, val_loader, criterion, device, use_amp=amp_enabled)
+        eval_postprocess_fn = None
+        if cfg.enable_postprocess_eval:
+            eval_postprocess_fn = lambda x: postprocess_prediction(
+                x,
+                num_classes=cfg.num_classes,
+                min_component_area=cfg.postprocess_min_component_area,
+                filter_mode=cfg.postprocess_filter,
+                kernel_size=cfg.postprocess_kernel_size,
+            )
+
         val_metrics = compute_segmentation_metrics(
             model,
             val_loader,
             device,
             cfg.num_classes,
             cfg.ignore_index,
-            postprocess_fn=(
-                lambda x: postprocess_prediction(
-                    x,
-                    num_classes=cfg.num_classes,
-                    min_component_area=cfg.postprocess_min_component_area,
-                    filter_mode=cfg.postprocess_filter,
-                    kernel_size=cfg.postprocess_kernel_size,
-                )
-                if cfg.enable_postprocess_eval
-                else None
-            ),
+            postprocess_fn=eval_postprocess_fn,
         )
         val_miou = float(val_metrics["miou"])
         recall_per_class = val_metrics["recall_per_class"]
