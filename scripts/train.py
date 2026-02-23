@@ -298,6 +298,8 @@ def main() -> None:
     best_val_loss = float("inf")
 
     for epoch in range(1, cfg.epochs + 1):
+        torch.cuda.empty_cache()  # 清空 PyTorch 显存缓存
+        print("Memory: ",torch.cuda.memory_summary())  # 打印显存使用详情
         t0 = time.time()
 
         train_stats = train_one_epoch(
