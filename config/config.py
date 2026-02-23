@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from src.models.switch2Norm import NormType
 
@@ -46,3 +47,20 @@ class TrainConfig:
     outputs_root: Path = PROJECT_ROOT / "outputs"
     seed: int = 42
     use_amp: bool = False
+
+    # Rare-class-aware sampling for long-tail classes.
+    use_rare_class_sampler: bool = True
+    rare_class_ids: tuple[int, ...] = (14, 16, 17, 12)
+    rare_class_weight_multiplier: float = 3.0
+    sampler_num_samples_factor: float = 1.0
+
+    # Hybrid loss: ce_weight * CE + focal_weight * Focal.
+    ce_weight: float = 0.5
+    focal_weight: float = 0.5
+    focal_gamma: float = 2.0
+
+    # Inference post-processing.
+    enable_postprocess: bool = True
+    postprocess_min_component_area: int = 20
+    postprocess_filter: Literal["majority", "median"] = "majority"
+    postprocess_kernel_size: int = 3

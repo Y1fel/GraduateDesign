@@ -1,6 +1,7 @@
 import numpy as np
 import torch
 import torch.nn.functional as F
+from typing import Callable
 
 
 @torch.no_grad()
@@ -106,6 +107,7 @@ def compute_segmentation_metrics(
     ignore_index: int,
     boundary_dilation: int = 2,
     trimap_width: int = 3,
+    postprocess_fn: Callable[[torch.Tensor], torch.Tensor] | None = None,
 ) -> dict:
     model.eval()
     conf = torch.zeros((num_classes, num_classes), dtype=torch.int64, device=device)
@@ -121,6 +123,8 @@ def compute_segmentation_metrics(
 
         logits = model(imgs)
         pred = torch.argmax(logits, dim=1)
+        if postprocess_fn is not None:
+            pred = postprocess_fn(pred)
         update_confusion_matrix(conf, pred, masks, num_classes, ignore_index)
 
         bf, bp, br = _boundary_fscore(pred, masks, ignore_index=ignore_index, dilation=boundary_dilation)
