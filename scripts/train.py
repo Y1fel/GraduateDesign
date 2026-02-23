@@ -67,6 +67,26 @@ def _build_rare_class_sampler(train_ds: CityscapesDataset, cfg: TrainConfig) -> 
         replacement=True,
     )
 
+
+def _compute_class_weights(train_ds: CityscapesDataset, cfg: TrainConfig) -> torch.Tensor:
+    remap = np.asarray(CITYSCAPES_34_TO_19, dtype=np.uint8)
+    counts = np.zeros(cfg.num_classes, dtype=np.float64)
+
+    for img_path in train_ds.img_paths:
+        mask_path = train_ds._resolve_mask(img_path)
+        mask_34 = np.array(Image.open(mask_path).convert("L"), dtype=np.uint8)
+        valid = mask_34 <= 33
+        mapped = remap[mask_34[valid]]
+        binc = np.bincount(mapped, minlength=cfg.num_classes)
+        counts += binc.astype(np.float64)
+
+    counts = np.maximum(counts, 1.0)
+    freq = counts / counts.sum()
+    inv = 1.0 / np.power(freq, float(cfg.class_weight_power))
+    inv = inv / inv.mean()
+    inv = np.clip(inv, float(cfg.class_weight_min), float(cfg.class_weight_max))
+    return torch.tensor(inv, dtype=torch.float32)
+
 def train_one_epoch(
     model,
     loader,
@@ -159,11 +179,6 @@ def save_vis_using_best_ckpt(
     epoch: int,
     max_items: int,
     best_ckpt_path: Path,
-    enable_postprocess: bool,
-    postprocess_min_component_area: int,
-    postprocess_filter: str,
-    postprocess_kernel_size: int,
-    num_classes: int,
 ) -> None:
     cur_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
 
@@ -182,11 +197,6 @@ def save_vis_using_best_ckpt(
         ignore_index=ignore_index,
         epoch=epoch,
         max_items=max_items,
-        enable_postprocess=enable_postprocess,
-        postprocess_min_component_area=postprocess_min_component_area,
-        postprocess_filter=postprocess_filter,
-        postprocess_kernel_size=postprocess_kernel_size,
-        num_classes=num_classes,
     )
 
     model.load_state_dict(cur_state, strict=True)
@@ -279,8 +289,16 @@ def main() -> None:
         ce_weight=cfg.ce_weight,
         focal_weight=cfg.focal_weight,
         focal_gamma=cfg.focal_gamma,
+        class_weights=(
+            _compute_class_weights(train_ds, cfg).to(device)
+            if cfg.use_class_weights
+            else None
+        ),
+        label_smoothing=cfg.label_smoothing,
         ignore_index=cfg.ignore_index,
     ).to(device)
+    if cfg.use_class_weights and criterion.class_weights is not None:
+        print(f"[INFO] class_weights={criterion.class_weights.detach().cpu().tolist()}")
 
     optimizer = torch.optim.SGD(
         model.parameters(),
@@ -298,8 +316,8 @@ def main() -> None:
     best_val_loss = float("inf")
 
     for epoch in range(1, cfg.epochs + 1):
-        torch.cuda.empty_cache()  # 清空 PyTorch 显存缓存
-        print("Memory: ",torch.cuda.memory_summary())  # 打印显存使用详情
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
         t0 = time.time()
 
         train_stats = train_one_epoch(
@@ -446,11 +464,6 @@ def main() -> None:
                 epoch=epoch,
                 max_items=cfg.save_vis_max_items,
                 best_ckpt_path=out.ckpt_dir / "best.pth",
-                enable_postprocess=cfg.enable_postprocess_vis,
-                postprocess_min_component_area=cfg.postprocess_min_component_area,
-                postprocess_filter=cfg.postprocess_filter,
-                postprocess_kernel_size=cfg.postprocess_kernel_size,
-                num_classes=cfg.num_classes,
             )
 
         scheduler.step()

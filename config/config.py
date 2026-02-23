@@ -27,6 +27,10 @@ class TrainConfig:
     dominant_class_warn_ratio: float = 0.9
 
     label_smoothing: float = 0.0
+    use_class_weights: bool = True
+    class_weight_power: float = 0.5
+    class_weight_min: float = 0.3
+    class_weight_max: float = 3.0
 
     output_stride: int = 16
     backbone_pretrained: bool = True
@@ -57,14 +61,13 @@ class TrainConfig:
     sampler_num_samples_factor: float = 1.0
 
     # Hybrid loss: ce_weight * CE + focal_weight * Focal.
-    ce_weight: float = 0.5
-    focal_weight: float = 0.5
+    ce_weight: float = 0.7
+    focal_weight: float = 0.3
     focal_gamma: float = 2.0
 
     # Inference post-processing.
     # Keep eval off by default to avoid CPU bottlenecks during validation.
     enable_postprocess_eval: bool = False
-    enable_postprocess_vis: bool = True
     postprocess_min_component_area: int = 20
     postprocess_filter: Literal["majority", "median"] = "majority"
     postprocess_kernel_size: int = 3
