@@ -2,20 +2,24 @@ import math
 import time
 from pathlib import Path
 
+import numpy as np
 import torch
 from torch.optim.lr_scheduler import CosineAnnealingLR
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, WeightedRandomSampler
 import torch.nn as nn
+from PIL import Image
 
 from src.commom.output_manager import OutputManager
 from src.commom.repro import set_seed
 from src.datasets.cityscapes import CityscapesDataset
+from src.datasets.cityscapes_labels import CITYSCAPES_34_TO_19
 from src.eval.mIoU import compute_segmentation_metrics
 from src.models.deeplabv3_plus import DeepLabV3Plus
 from src.datasets.cityscapes_labels import CITYSCAPES_19_CLASS_NAMES, CITYSCAPES_19_ID2COLOR
+from src.utils.postprocess import postprocess_prediction
 from src.viz.visualizer import save_predictions_triplet
 from config.config import TrainConfig
-from loss.focalloss import FocalLoss
+from loss.combined_loss import CombinedCEFocalLoss
 
 
 def freeze_bn(model):
@@ -38,6 +42,30 @@ def _compute_grad_norm(model: nn.Module) -> float:
             g = p.grad.detach().float().norm(2).item()
             total += g * g
     return total ** 0.5
+
+
+def _build_rare_class_sampler(train_ds: CityscapesDataset, cfg: TrainConfig) -> WeightedRandomSampler:
+    rare_ids = set(int(cid) for cid in cfg.rare_class_ids)
+    remap = np.asarray(CITYSCAPES_34_TO_19, dtype=np.uint8)
+    weights = np.ones(len(train_ds.img_paths), dtype=np.float64)
+
+    for idx, img_path in enumerate(train_ds.img_paths):
+        mask_path = train_ds._resolve_mask(img_path)
+        mask_34 = np.array(Image.open(mask_path).convert("L"), dtype=np.uint8)
+        valid = mask_34 <= 33
+        mapped = np.full(mask_34.shape, fill_value=train_ds.ignore_index, dtype=np.uint8)
+        mapped[valid] = remap[mask_34[valid]]
+        present = set(np.unique(mapped).tolist())
+        if any(cid in present for cid in rare_ids):
+            weights[idx] *= float(cfg.rare_class_weight_multiplier)
+
+    num_samples = int(len(train_ds) * float(cfg.sampler_num_samples_factor))
+    num_samples = max(1, num_samples)
+    return WeightedRandomSampler(
+        weights=torch.from_numpy(weights).double(),
+        num_samples=num_samples,
+        replacement=True,
+    )
 
 def train_one_epoch(
     model,
@@ -122,6 +150,11 @@ def save_vis_using_best_ckpt(
     epoch: int,
     max_items: int,
     best_ckpt_path: Path,
+    enable_postprocess: bool,
+    postprocess_min_component_area: int,
+    postprocess_filter: str,
+    postprocess_kernel_size: int,
+    num_classes: int,
 ) -> None:
     cur_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
 
@@ -140,6 +173,11 @@ def save_vis_using_best_ckpt(
         ignore_index=ignore_index,
         epoch=epoch,
         max_items=max_items,
+        enable_postprocess=enable_postprocess,
+        postprocess_min_component_area=postprocess_min_component_area,
+        postprocess_filter=postprocess_filter,
+        postprocess_kernel_size=postprocess_kernel_size,
+        num_classes=num_classes,
     )
 
     model.load_state_dict(cur_state, strict=True)
@@ -182,10 +220,21 @@ def main() -> None:
         training=False,
     )
 
+    train_sampler = None
+    train_shuffle = True
+    if cfg.use_rare_class_sampler:
+        print(
+            "[INFO] Building rare-class-aware sampler "
+            f"(classes={cfg.rare_class_ids}, multiplier={cfg.rare_class_weight_multiplier:.2f})"
+        )
+        train_sampler = _build_rare_class_sampler(train_ds, cfg)
+        train_shuffle = False
+
     train_loader = DataLoader(
         train_ds,
         batch_size=cfg.batch_size,
-        shuffle=True,
+        shuffle=train_shuffle,
+        sampler=train_sampler,
         num_workers=cfg.num_workers,
         pin_memory=(device.type == "cuda"),
         drop_last=True,
@@ -208,9 +257,10 @@ def main() -> None:
         decoder_dropout=cfg.decoder_dropout,
     ).to(device)
 
-    criterion = FocalLoss(
-        gamma=2.0,
-        alpha=None,
+    criterion = CombinedCEFocalLoss(
+        ce_weight=cfg.ce_weight,
+        focal_weight=cfg.focal_weight,
+        focal_gamma=cfg.focal_gamma,
         ignore_index=cfg.ignore_index,
     ).to(device)
 
@@ -244,7 +294,24 @@ def main() -> None:
         )
         train_loss = float(train_stats["loss"])
         val_loss = evaluate_loss(model, val_loader, criterion, device, use_amp=amp_enabled)
-        val_metrics = compute_segmentation_metrics(model, val_loader, device, cfg.num_classes, cfg.ignore_index)
+        val_metrics = compute_segmentation_metrics(
+            model,
+            val_loader,
+            device,
+            cfg.num_classes,
+            cfg.ignore_index,
+            postprocess_fn=(
+                lambda x: postprocess_prediction(
+                    x,
+                    num_classes=cfg.num_classes,
+                    min_component_area=cfg.postprocess_min_component_area,
+                    filter_mode=cfg.postprocess_filter,
+                    kernel_size=cfg.postprocess_kernel_size,
+                )
+                if cfg.enable_postprocess
+                else None
+            ),
+        )
         val_miou = float(val_metrics["miou"])
         recall_per_class = val_metrics["recall_per_class"]
         effective_mask = [not math.isnan(float(v)) for v in recall_per_class]
@@ -358,6 +425,11 @@ def main() -> None:
                 epoch=epoch,
                 max_items=cfg.save_vis_max_items,
                 best_ckpt_path=out.ckpt_dir / "best.pth",
+                enable_postprocess=cfg.enable_postprocess,
+                postprocess_min_component_area=cfg.postprocess_min_component_area,
+                postprocess_filter=cfg.postprocess_filter,
+                postprocess_kernel_size=cfg.postprocess_kernel_size,
+                num_classes=cfg.num_classes,
             )
 
         scheduler.step()

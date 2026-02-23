@@ -20,6 +20,11 @@ def save_predictions_triplet(
     ignore_index: int,
     epoch: int,
     max_items: int = 25,
+    enable_postprocess: bool = False,
+    postprocess_min_component_area: int = 20,
+    postprocess_filter: str = "majority",
+    postprocess_kernel_size: int = 3,
+    num_classes: int = 19,
 ) -> None:
     model.eval()
     epoch_dir = out_dir / f"epoch_{epoch:03d}"
@@ -32,6 +37,16 @@ def save_predictions_triplet(
 
         logits = model(imgs)
         pred = torch.argmax(logits, dim=1)
+        if enable_postprocess:
+            from src.utils.postprocess import postprocess_prediction
+
+            pred = postprocess_prediction(
+                pred,
+                num_classes=num_classes,
+                min_component_area=postprocess_min_component_area,
+                filter_mode=postprocess_filter,
+                kernel_size=postprocess_kernel_size,
+            )
 
         imgs_cpu = imgs.detach().cpu()
         masks_cpu = masks.detach().cpu().numpy()
