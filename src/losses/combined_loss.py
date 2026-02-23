@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from loss.focalloss import FocalLoss
+from src.losses.focalloss import FocalLoss
 
 
 class CombinedCEFocalLoss(nn.Module):

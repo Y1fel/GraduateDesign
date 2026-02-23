@@ -19,7 +19,7 @@ from src.datasets.cityscapes_labels import CITYSCAPES_19_CLASS_NAMES, CITYSCAPES
 from src.utils.postprocess import postprocess_prediction
 from src.viz.visualizer import save_predictions_triplet
 from config.config import TrainConfig
-from loss.combined_loss import CombinedCEFocalLoss
+from src.losses.combined_loss import CombinedCEFocalLoss
 
 
 def freeze_bn(model):
