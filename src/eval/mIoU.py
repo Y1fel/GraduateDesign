@@ -117,7 +117,9 @@ def compute_segmentation_metrics(
     num_classes: int,
     ignore_index: int,
     boundary_dilation: int = 2,
-    trimap_width: int = 3
+    trimap_width: int = 3,
+    scales: list[float] | tuple[float, ...] | None = None,
+    flip: bool = False,
 ) -> dict:
     model.eval()
     conf = torch.zeros((num_classes, num_classes), dtype=torch.int64, device=device)
@@ -127,11 +129,49 @@ def compute_segmentation_metrics(
     bf_recalls = []
     trimap_ious = []
 
+    eval_scales = list(scales) if scales else [1.0]
+
     for imgs, masks, _names in loader:
         imgs = imgs.to(device, non_blocking=True)
         masks = masks.to(device, non_blocking=True)
 
-        logits = model(imgs)
+        base_h, base_w = imgs.shape[-2], imgs.shape[-1]
+        ms_logits: list[torch.Tensor] = []
+
+        for scale in eval_scales:
+            if float(scale) <= 0:
+                raise ValueError(f"Scale must be positive, got {scale}")
+
+            if float(scale) == 1.0:
+                scaled_imgs = imgs
+            else:
+                scaled_h = max(1, int(round(base_h * float(scale))))
+                scaled_w = max(1, int(round(base_w * float(scale))))
+                scaled_imgs = F.interpolate(
+                    imgs,
+                    size=(scaled_h, scaled_w),
+                    mode="bilinear",
+                    align_corners=False,
+                )
+
+            logits = model(scaled_imgs)
+
+            if flip:
+                flipped_imgs = torch.flip(scaled_imgs, dims=[3])
+                flipped_logits = model(flipped_imgs)
+                flipped_logits = torch.flip(flipped_logits, dims=[3])
+                logits = 0.5 * (logits + flipped_logits)
+
+            if logits.shape[-2:] != (base_h, base_w):
+                logits = F.interpolate(
+                    logits,
+                    size=(base_h, base_w),
+                    mode="bilinear",
+                    align_corners=False,
+                )
+            ms_logits.append(logits)
+
+        logits = torch.stack(ms_logits, dim=0).mean(dim=0)
         pred = torch.argmax(logits, dim=1)
         update_confusion_matrix(conf, pred, masks, num_classes, ignore_index)
 
