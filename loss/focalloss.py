@@ -9,7 +9,7 @@ class FocalLoss(nn.Module):
     def __init__(
         self,
         gamma: float = 2.0,
-        alpha: float | None = None,
+        alpha: float | torch.Tensor | None = None,
         ignore_index: int = 255,
     ) -> None:
         super().__init__()
@@ -34,6 +34,11 @@ class FocalLoss(nn.Module):
         focal_loss = (1 - pt) ** self.gamma * ce_loss
 
         if self.alpha is not None:
-            focal_loss = self.alpha * focal_loss
+            if isinstance(self.alpha, torch.Tensor):
+                alpha = self.alpha.to(logits.device, dtype=logits.dtype)
+                alpha_t = alpha[targets[valid_mask]]
+                focal_loss = alpha_t * focal_loss
+            else:
+                focal_loss = self.alpha * focal_loss
 
         return focal_loss.mean()
