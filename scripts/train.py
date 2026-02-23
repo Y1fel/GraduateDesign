@@ -328,18 +328,9 @@ def main() -> None:
         num_classes=cfg.num_classes,
         backbone_pretrained=cfg.backbone_pretrained,
         output_stride=cfg.output_stride,
-        head_norm=cfg.head_norm,
         aspp_dropout=cfg.aspp_dropout,
         decoder_dropout=cfg.decoder_dropout,
     )
-
-    dist_ready = (
-        torch.distributed.is_available()
-        and torch.distributed.is_initialized()
-        and torch.distributed.get_world_size() > 1
-    )
-    if cfg.use_syncbn and dist_ready:
-        model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
 
     model = model.to(device)
 
@@ -375,13 +366,7 @@ def main() -> None:
         f"{policy} (iter-based, max_iter={max_iter}, warmup_iters={cfg.warmup_iters}, "
         f"warmup_ratio={cfg.warmup_ratio:.3f}, poly_power={cfg.poly_power:.3f}, eta_min={cfg.lr_eta_min:.2e})"
     )
-    print(
-        "[INFO] norm_strategy="
-        f"head_norm={cfg.head_norm}, use_syncbn={cfg.use_syncbn}, "
-        f"syncbn_converted={bool(cfg.use_syncbn and dist_ready)}, freeze_bn={cfg.freeze_bn}"
-    )
-    if cfg.use_syncbn and not dist_ready:
-        print("[INFO] SyncBatchNorm conversion skipped: distributed process group is unavailable or world_size<=1.")
+    print(f"[INFO] norm_strategy=freeze_bn={cfg.freeze_bn}")
 
     best_miou = -1.0
     best_val_loss = float("inf")
@@ -408,13 +393,28 @@ def main() -> None:
         train_loss = float(train_stats["loss"])
         val_loss = evaluate_loss(model, val_loader, criterion, device, use_amp=amp_enabled)
 
-        val_metrics = compute_segmentation_metrics(
+        val_metrics_single = compute_segmentation_metrics(
             model,
             val_loader,
             device,
             cfg.num_classes,
             cfg.ignore_index,
+            scales=[1.0],
+            flip=False,
         )
+        val_metrics = val_metrics_single
+        if cfg.eval_multi_scale:
+            val_metrics = compute_segmentation_metrics(
+                model,
+                val_loader,
+                device,
+                cfg.num_classes,
+                cfg.ignore_index,
+                scales=list(cfg.eval_scales),
+                flip=cfg.eval_flip,
+            )
+
+        val_miou_single = float(val_metrics_single["miou"])
         val_miou = float(val_metrics["miou"])
         recall_per_class = val_metrics["recall_per_class"]
         effective_mask = [not math.isnan(float(v)) for v in recall_per_class]
@@ -433,9 +433,15 @@ def main() -> None:
         dominant_ratio = float(pred_hist.max().item() / pred_total) if pred_total > 0 else 0.0
         dominant_class = int(torch.argmax(pred_hist).item()) if pred_total > 0 else -1
 
+        eval_mode = (
+            f"ms+flip(scales={list(cfg.eval_scales)}, flip={cfg.eval_flip})"
+            if cfg.eval_multi_scale
+            else "single-scale"
+        )
         print(
             f"[EPOCH {epoch:03d}/{cfg.epochs}] train_loss={train_loss:.4f} "
-            f"val_loss={val_loss:.4f} val_mIoU(all)={val_miou:.4f} val_mIoU(effective)={val_miou_effective:.4f} "
+            f"val_loss={val_loss:.4f} val_mIoU(single)={val_miou_single:.4f} "
+            f"val_mIoU({eval_mode})={val_miou:.4f} val_mIoU(effective)={val_miou_effective:.4f} "
             f"val_BF1={val_metrics['boundary_fscore']:.4f} val_TrimapIoU={val_metrics['trimap_iou']:.4f} "
             f"data_t={train_stats['avg_data_time']:.3f}s iter_t={train_stats['avg_compute_time']:.3f}s "
             f"grad_norm(avg)={train_stats['avg_grad_norm']:.4f} lr={float(train_stats['last_lr']):.8f} time={dt:.1f}s"

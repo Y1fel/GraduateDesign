@@ -1,8 +1,6 @@
 from dataclasses import dataclass
 from pathlib import Path
 
-from src.models.switch2Norm import NormType
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -37,9 +35,6 @@ class TrainConfig:
 
     output_stride: int = 16
     backbone_pretrained: bool = True
-    # Recommended: single-card -> head_norm="bn", use_syncbn=False; multi-card DDP -> head_norm="syncbn", use_syncbn=True.
-    head_norm: NormType = "bn"
-    use_syncbn: bool = False
     aspp_dropout: float = 0.1
     decoder_dropout: float = 0.2
 
@@ -53,6 +48,10 @@ class TrainConfig:
     train_multi_scale_max: float = 2
     hflip_prob: float = 0.5
 
+    # Eval-time TTA.
+    eval_multi_scale: bool = True
+    eval_scales: tuple[float, ...] = (0.75, 1.0, 1.25)
+    eval_flip: bool = True
 
     save_vis_every: int = 50
     save_vis_max_items: int = 10
