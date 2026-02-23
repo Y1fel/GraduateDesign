@@ -16,7 +16,6 @@ from src.datasets.cityscapes_labels import CITYSCAPES_34_TO_19
 from src.eval.mIoU import compute_segmentation_metrics
 from src.models.deeplabv3_plus import DeepLabV3Plus
 from src.datasets.cityscapes_labels import CITYSCAPES_19_CLASS_NAMES, CITYSCAPES_19_ID2COLOR
-from src.utils.postprocess import postprocess_prediction
 from src.viz.visualizer import save_predictions_triplet
 from config.config import TrainConfig
 from loss.combined_loss import CombinedCEFocalLoss
@@ -332,15 +331,6 @@ def main() -> None:
         )
         train_loss = float(train_stats["loss"])
         val_loss = evaluate_loss(model, val_loader, criterion, device, use_amp=amp_enabled)
-        postprocess_fn = None
-        if cfg.enable_postprocess_eval:
-            postprocess_fn = lambda x: postprocess_prediction(
-                x,
-                num_classes=cfg.num_classes,
-                min_component_area=cfg.postprocess_min_component_area,
-                filter_mode=cfg.postprocess_filter,
-                kernel_size=cfg.postprocess_kernel_size,
-            )
 
         val_metrics = compute_segmentation_metrics(
             model,
@@ -348,7 +338,6 @@ def main() -> None:
             device,
             cfg.num_classes,
             cfg.ignore_index,
-            postprocess_fn=postprocess_fn,
         )
         val_miou = float(val_metrics["miou"])
         recall_per_class = val_metrics["recall_per_class"]
