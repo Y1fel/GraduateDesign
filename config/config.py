@@ -17,6 +17,8 @@ class TrainConfig:
     epochs: int = 100
     batch_size: int = 16
     num_workers: int = 4
+    persistent_workers: bool = True
+    prefetch_factor: int = 4
     lr_0: float = 3e-4
     weight_decay: float = 1e-3
     lr_eta_min: float = 1e-6
@@ -46,7 +48,11 @@ class TrainConfig:
 
     outputs_root: Path = PROJECT_ROOT / "outputs"
     seed: int = 42
+<<<<<<< codex/investigate-fragment-issue
+    use_amp: bool = True
+=======
     use_amp: bool = False
+>>>>>>> master
 
     # Rare-class-aware sampling for long-tail classes.
     use_rare_class_sampler: bool = True
@@ -60,7 +66,13 @@ class TrainConfig:
     focal_gamma: float = 2.0
 
     # Inference post-processing.
+<<<<<<< codex/investigate-fragment-issue
+    # Keep eval off by default to avoid CPU bottlenecks during validation.
+    enable_postprocess_eval: bool = False
+    enable_postprocess_vis: bool = True
+=======
     enable_postprocess: bool = True
+>>>>>>> master
     postprocess_min_component_area: int = 20
     postprocess_filter: Literal["majority", "median"] = "majority"
     postprocess_kernel_size: int = 3

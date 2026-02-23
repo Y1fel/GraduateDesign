@@ -85,8 +85,13 @@ def train_one_epoch(
     pred_hist = torch.zeros(num_classes, dtype=torch.int64, device=device)
     grad_norm_sum = 0.0
     grad_steps = 0
+    data_time_sum = 0.0
+    iter_compute_time_sum = 0.0
+    loop_t = time.perf_counter()
 
     for _it, (imgs, masks, _names) in enumerate(loader):
+        data_time_sum += time.perf_counter() - loop_t
+        iter_t = time.perf_counter()
         imgs = imgs.to(device, non_blocking=True)
         masks = masks.to(device, non_blocking=True)
 
@@ -110,11 +115,15 @@ def train_one_epoch(
         bs = imgs.size(0)
         total_loss += loss.item() * bs
         n += bs
+        iter_compute_time_sum += time.perf_counter() - iter_t
+        loop_t = time.perf_counter()
 
     return {
         "loss": total_loss / max(n, 1),
         "pred_hist": pred_hist.detach().cpu(),
         "avg_grad_norm": grad_norm_sum / max(grad_steps, 1),
+        "avg_data_time": data_time_sum / max(grad_steps, 1),
+        "avg_compute_time": iter_compute_time_sum / max(grad_steps, 1),
     }
 
 
@@ -187,6 +196,11 @@ def main() -> None:
     cfg = TrainConfig()
     set_seed(cfg.seed)
 
+    if torch.cuda.is_available():
+        torch.backends.cudnn.benchmark = True
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[INFO] device = {device}")
     amp_enabled = bool(cfg.use_amp and device.type == "cuda")
@@ -237,6 +251,8 @@ def main() -> None:
         sampler=train_sampler,
         num_workers=cfg.num_workers,
         pin_memory=(device.type == "cuda"),
+        persistent_workers=bool(cfg.persistent_workers and cfg.num_workers > 0),
+        prefetch_factor=(cfg.prefetch_factor if cfg.num_workers > 0 else None),
         drop_last=True,
     )
     val_loader = DataLoader(
@@ -245,6 +261,8 @@ def main() -> None:
         shuffle=False,
         num_workers=cfg.num_workers,
         pin_memory=(device.type == "cuda"),
+        persistent_workers=bool(cfg.persistent_workers and cfg.num_workers > 0),
+        prefetch_factor=(cfg.prefetch_factor if cfg.num_workers > 0 else None),
         drop_last=False,
     )
 
@@ -308,7 +326,7 @@ def main() -> None:
                     filter_mode=cfg.postprocess_filter,
                     kernel_size=cfg.postprocess_kernel_size,
                 )
-                if cfg.enable_postprocess
+                if cfg.enable_postprocess_eval
                 else None
             ),
         )
@@ -334,6 +352,7 @@ def main() -> None:
             f"[EPOCH {epoch:03d}/{cfg.epochs}] train_loss={train_loss:.4f} "
             f"val_loss={val_loss:.4f} val_mIoU(all)={val_miou:.4f} val_mIoU(effective)={val_miou_effective:.4f} "
             f"val_BF1={val_metrics['boundary_fscore']:.4f} val_TrimapIoU={val_metrics['trimap_iou']:.4f} "
+            f"data_t={train_stats['avg_data_time']:.3f}s iter_t={train_stats['avg_compute_time']:.3f}s "
             f"grad_norm(avg)={train_stats['avg_grad_norm']:.4f} time={dt:.1f}s"
         )
         print(f"[TRAIN-PRED-HIST] counts={pred_hist.tolist()}")
@@ -425,7 +444,7 @@ def main() -> None:
                 epoch=epoch,
                 max_items=cfg.save_vis_max_items,
                 best_ckpt_path=out.ckpt_dir / "best.pth",
-                enable_postprocess=cfg.enable_postprocess,
+                enable_postprocess=cfg.enable_postprocess_vis,
                 postprocess_min_component_area=cfg.postprocess_min_component_area,
                 postprocess_filter=cfg.postprocess_filter,
                 postprocess_kernel_size=cfg.postprocess_kernel_size,
