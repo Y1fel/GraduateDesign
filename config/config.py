@@ -13,21 +13,21 @@ class TrainConfig:
     num_classes: int = 19
     ignore_index: int = 255
 
-    epochs: int = 100
-    batch_size: int = 12
+    epochs: int = 120
+    batch_size: int = 8
     num_workers: int = 8
     persistent_workers: bool = True
-    prefetch_factor: int = 6
-    lr_0: float = 3e-4
+    prefetch_factor: int = 4
+    lr_0: float = 2.5e-4
     weight_decay: float = 1e-3
     lr_eta_min: float = 1e-6
     # Freeze BN only for small-batch settings after stability is verified.
     freeze_bn: bool = False
     dominant_class_warn_ratio: float = 0.9
 
-    label_smoothing: float = 0.0
+    label_smoothing: float = 0.03
     use_class_weights: bool = True
-    class_weight_power: float = 0.5
+    class_weight_power: float = 0.6
     class_weight_min: float = 0.3
     class_weight_max: float = 3.0
 
@@ -39,8 +39,8 @@ class TrainConfig:
 
     resize_h: int = 1024
     resize_w: int = 2048
-    crop_h: int = 768
-    crop_w: int = 768
+    crop_h: int = 896
+    crop_w: int = 896
     train_multi_scale_min: float = 0.5
     train_multi_scale_max: float = 2
     hflip_prob: float = 0.5
@@ -55,11 +55,11 @@ class TrainConfig:
 
     # Rare-class-aware sampling for long-tail classes.
     use_rare_class_sampler: bool = True
-    rare_class_ids: tuple[int, ...] = (3, 5, 6, 7, 17, 15, 14)
-    rare_class_weight_multiplier: float = 3.0
+    rare_class_ids: tuple[int, ...] = (3, 5, 6, 7, 17, 15, 14, 12)
+    rare_class_weight_multiplier: float = 4.0
     sampler_num_samples_factor: float = 1.0
 
     # Hybrid loss: ce_weight * CE + focal_weight * Focal.
-    ce_weight: float = 0.7
-    focal_weight: float = 0.3
+    ce_weight: float = 0.45
+    focal_weight: float = 0.55
     focal_gamma: float = 2.0
