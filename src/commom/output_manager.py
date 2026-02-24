@@ -21,6 +21,7 @@ class OutputManager:
         self.metrics_csv = self.log_dir / "metrics.csv"
         self.per_class_metrics_csv = self.log_dir / "per_class_metrics.csv"
         self.config_json = self.run_dir / "config.json"
+        self.loss_components_csv = self.log_dir / "loss_components.csv"
 
     def save_config(self, cfg: Any) -> None:
         self.config_json.write_text(
@@ -48,6 +49,11 @@ class OutputManager:
             with self.per_class_metrics_csv.open("w", newline="", encoding="utf-8") as f:
                 w = csv.writer(f)
                 w.writerow(["epoch", "class_id", "class_name", "iou", "precision", "recall"])
+
+        if not self.loss_components_csv.exists():
+            with self.loss_components_csv.open("w", newline="", encoding="utf-8") as f:
+                w = csv.writer(f)
+                w.writerow(["epoch", "split", "ohem_ce", "lovasz", "boundary", "total"])
 
     def append_metrics(
         self,
@@ -92,3 +98,24 @@ class OutputManager:
                     f"{recall:.6f}",
                 ]
             )
+
+
+    def append_loss_components(
+        self,
+        epoch: int,
+        split: str,
+        ohem_ce: float,
+        lovasz: float,
+        boundary: float,
+        total: float,
+    ) -> None:
+        with self.loss_components_csv.open("a", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow([
+                epoch,
+                split,
+                f"{ohem_ce:.6f}",
+                f"{lovasz:.6f}",
+                f"{boundary:.6f}",
+                f"{total:.6f}",
+            ])
