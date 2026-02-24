@@ -18,7 +18,7 @@ from src.models.deeplabv3_plus import DeepLabV3Plus
 from src.datasets.cityscapes_labels import CITYSCAPES_19_CLASS_NAMES, CITYSCAPES_19_ID2COLOR
 from src.viz.visualizer import save_predictions_triplet
 from config.config import TrainConfig
-from src.losses.combined_loss import CombinedCEFocalLoss
+from src.losses.combined_loss import CombinedCEFocalLoss, CompositeSegLoss
 
 
 def freeze_bn(model):
@@ -69,7 +69,7 @@ def _build_rare_class_sampler(train_ds: CityscapesDataset, cfg: TrainConfig) -> 
     )
 
 
-def _compute_class_weights(train_ds: CityscapesDataset, cfg: TrainConfig) -> torch.Tensor:
+def _compute_class_weights(train_ds: CityscapesDataset, cfg: TrainConfig, strategy_override: str | None = None) -> torch.Tensor:
     remap = np.asarray(CITYSCAPES_34_TO_19, dtype=np.uint8)
     counts = np.zeros(cfg.num_classes, dtype=np.float64)
 
@@ -84,12 +84,44 @@ def _compute_class_weights(train_ds: CityscapesDataset, cfg: TrainConfig) -> tor
 
     counts = np.maximum(counts, 1.0)
     freq = counts / counts.sum()
-    inv = 1.0 / np.power(freq, float(cfg.class_weight_power))
-    inv = inv / inv.mean()
-    inv = np.clip(inv, float(cfg.class_weight_min), float(cfg.class_weight_max))
-    return torch.tensor(inv, dtype=torch.float32)
+    strategy = str(strategy_override or cfg.class_weight_strategy).lower()
+    if strategy == "median_frequency":
+        median_freq = np.median(freq[freq > 0])
+        weights = median_freq / freq
+    else:
+        weights = 1.0 / np.power(freq, float(cfg.class_weight_power))
+
+    weights = weights / weights.mean()
+    low_freq_threshold = np.quantile(freq, 0.2)
+    rare_mask = freq <= low_freq_threshold
+    weights[rare_mask] = np.minimum(weights[rare_mask], float(cfg.class_weight_rare_cap))
+    weights = np.clip(weights, float(cfg.class_weight_min), float(cfg.class_weight_max))
+    return torch.tensor(weights, dtype=torch.float32)
 
 
+
+def _maybe_boost_low_iou_class_weights(
+    criterion: nn.Module,
+    iou_per_class: list[float],
+    cfg: TrainConfig,
+) -> None:
+    if not hasattr(criterion, "class_weights") or criterion.class_weights is None:
+        return
+    weights = criterion.class_weights.detach().clone()
+    boosted = False
+    for idx, iou in enumerate(iou_per_class):
+        if (not math.isnan(float(iou))) and float(iou) < float(cfg.class_weight_boost_low_iou_threshold):
+            weights[idx] = min(
+                weights[idx] * float(cfg.class_weight_boost_factor),
+                float(cfg.class_weight_rare_cap),
+            )
+            boosted = True
+    if boosted:
+        if hasattr(criterion, "update_class_weights"):
+            criterion.update_class_weights(weights.to(criterion.class_weights.device))
+        else:
+            criterion.class_weights.copy_(weights.to(criterion.class_weights.device))
+        print(f"[INFO] boosted class_weights={criterion.class_weights.detach().cpu().tolist()}")
 
 def _compute_lr_at_iter(global_iter: int, max_iter: int, cfg: TrainConfig) -> float:
     if max_iter <= 0:
@@ -137,6 +169,7 @@ def train_one_epoch(
     cfg: TrainConfig,
     global_iter_start: int,
     max_iter: int,
+    return_loss_components: bool = False,
 ) -> dict:
     model.train()
     if freeze_bn_enabled:
@@ -149,6 +182,7 @@ def train_one_epoch(
     data_time_sum = 0.0
     iter_compute_time_sum = 0.0
     loop_t = time.perf_counter()
+    loss_components_sum = {"ohem_ce": 0.0, "lovasz": 0.0, "boundary": 0.0, "total": 0.0}
 
     for _it, (imgs, masks, _names) in enumerate(loader):
         global_iter = global_iter_start + _it
@@ -162,9 +196,13 @@ def train_one_epoch(
 
         optimizer.zero_grad(set_to_none=True)
 
-        with torch.amp.autocast('cuda',enabled=use_amp):
+        with torch.amp.autocast('cuda', enabled=use_amp):
             logits = model(imgs)
-            loss = criterion(logits, masks)
+            if return_loss_components:
+                loss, loss_components = criterion(logits, masks, return_components=True)
+            else:
+                loss = criterion(logits, masks)
+                loss_components = None
 
         scaler.scale(loss).backward()
         if use_amp:
@@ -179,6 +217,9 @@ def train_one_epoch(
 
         bs = imgs.size(0)
         total_loss += loss.item() * bs
+        if loss_components is not None:
+            for k in loss_components_sum:
+                loss_components_sum[k] += float(loss_components[k]) * bs
         n += bs
         iter_compute_time_sum += time.perf_counter() - iter_t
         loop_t = time.perf_counter()
@@ -191,28 +232,40 @@ def train_one_epoch(
         "avg_compute_time": iter_compute_time_sum / max(grad_steps, 1),
         "last_lr": optimizer.param_groups[0]["lr"],
         "iters": grad_steps,
+        "loss_components": ({k: v / max(n, 1) for k, v in loss_components_sum.items()} if return_loss_components else None),
     }
 
 
 @torch.inference_mode()
-def evaluate_loss(model, loader, criterion, device, use_amp: bool) -> float:
+def evaluate_loss(model, loader, criterion, device, use_amp: bool, return_loss_components: bool = False):
     model.eval()
     total_loss = 0.0
     n = 0
+    loss_components_sum = {"ohem_ce": 0.0, "lovasz": 0.0, "boundary": 0.0, "total": 0.0}
 
     for imgs, masks, _names in loader:
         imgs = imgs.to(device, non_blocking=True)
         masks = masks.to(device, non_blocking=True)
 
-        with torch.amp.autocast('cuda',enabled=use_amp):
+        with torch.amp.autocast('cuda', enabled=use_amp):
             logits = model(imgs)
-            loss = criterion(logits, masks)
+            if return_loss_components:
+                loss, loss_components = criterion(logits, masks, return_components=True)
+            else:
+                loss = criterion(logits, masks)
+                loss_components = None
 
         bs = imgs.size(0)
         total_loss += loss.item() * bs
+        if loss_components is not None:
+            for k in loss_components_sum:
+                loss_components_sum[k] += float(loss_components[k]) * bs
         n += bs
 
-    return total_loss / max(n, 1)
+    avg_loss = total_loss / max(n, 1)
+    if return_loss_components:
+        return avg_loss, {k: v / max(n, 1) for k, v in loss_components_sum.items()}
+    return avg_loss
 
 
 @torch.inference_mode()
@@ -335,20 +388,35 @@ def main() -> None:
 
     model = model.to(device)
 
-    criterion = CombinedCEFocalLoss(
-        ce_weight=cfg.ce_weight,
-        focal_weight=cfg.focal_weight,
-        focal_gamma=cfg.focal_gamma,
-        class_weights=(
-            _compute_class_weights(train_ds, cfg).to(device)
-            if cfg.use_class_weights
-            else None
-        ),
-        label_smoothing=cfg.label_smoothing,
-        ignore_index=cfg.ignore_index,
-    ).to(device)
-    if cfg.use_class_weights and criterion.class_weights is not None:
+    class_weight_strategy = "power_inverse" if str(cfg.loss_mode).lower() == "baseline" else None
+    class_weights = (
+        _compute_class_weights(train_ds, cfg, strategy_override=class_weight_strategy).to(device)
+        if cfg.use_class_weights
+        else None
+    )
+    if str(cfg.loss_mode).lower() == "baseline":
+        criterion = CombinedCEFocalLoss(
+            ce_weight=cfg.ce_weight,
+            focal_weight=cfg.focal_weight,
+            focal_gamma=cfg.focal_gamma,
+            class_weights=class_weights,
+            label_smoothing=cfg.label_smoothing,
+            ignore_index=cfg.ignore_index,
+        ).to(device)
+    else:
+        criterion = CompositeSegLoss(
+            num_classes=cfg.num_classes,
+            ignore_index=cfg.ignore_index,
+            ohem_ratio=cfg.ohem_ratio,
+            ohem_weight=cfg.ohem_weight,
+            lovasz_weight=cfg.lovasz_weight,
+            boundary_weight=cfg.boundary_weight,
+            boundary_width=cfg.boundary_width,
+            class_weights=class_weights,
+        ).to(device)
+    if cfg.use_class_weights and hasattr(criterion, "class_weights") and criterion.class_weights is not None:
         print(f"[INFO] class_weights={criterion.class_weights.detach().cpu().tolist()}")
+    print(f"[INFO] loss_mode={cfg.loss_mode}")
 
     optimizer = torch.optim.SGD(
         model.parameters(),
@@ -395,9 +463,16 @@ def main() -> None:
             cfg=cfg,
             global_iter_start=global_iter_start,
             max_iter=max_iter,
+            return_loss_components=(str(cfg.loss_mode).lower() != "baseline"),
         )
         train_loss = float(train_stats["loss"])
-        val_loss = evaluate_loss(model, val_loader, criterion, device, use_amp=amp_enabled)
+        if str(cfg.loss_mode).lower() == "baseline":
+            val_loss = evaluate_loss(model, val_loader, criterion, device, use_amp=amp_enabled)
+            val_loss_components = None
+        else:
+            val_loss, val_loss_components = evaluate_loss(
+                model, val_loader, criterion, device, use_amp=amp_enabled, return_loss_components=True
+            )
 
         val_metrics_single = compute_segmentation_metrics(
             model,
@@ -484,6 +559,22 @@ def main() -> None:
             )
             per_class_rows.append((class_id, class_name, iou_val, precision_val, recall_val))
 
+        if (
+            str(cfg.loss_mode).lower() != "baseline"
+            and (epoch % max(1, int(cfg.report_loss_every)) == 0)
+            and train_stats["loss_components"] is not None
+            and val_loss_components is not None
+        ):
+            trc = train_stats["loss_components"]
+            vac = val_loss_components
+            print(
+                "[LOSS-COMP] "
+                f"epoch={epoch:03d} train(ohem={trc['ohem_ce']:.4f}, lovasz={trc['lovasz']:.4f}, boundary={trc['boundary']:.4f}, total={trc['total']:.4f}) "
+                f"val(ohem={vac['ohem_ce']:.4f}, lovasz={vac['lovasz']:.4f}, boundary={vac['boundary']:.4f}, total={vac['total']:.4f})"
+            )
+            out.append_loss_components(epoch, "train", trc["ohem_ce"], trc["lovasz"], trc["boundary"], trc["total"])
+            out.append_loss_components(epoch, "val", vac["ohem_ce"], vac["lovasz"], vac["boundary"], vac["total"])
+
         valid_rows = [row for row in per_class_rows if not math.isnan(row[2])]
         if valid_rows:
             bottom_k = min(5, len(valid_rows))
@@ -494,6 +585,12 @@ def main() -> None:
                     f"[PER-CLASS][BOTTOM] {class_id:02d} {class_name:<18} "
                     f"iou={iou_val:.4f} precision={precision_val:.4f} recall={recall_val:.4f}"
                 )
+
+        if (
+            cfg.use_class_weights
+            and (epoch % max(1, int(cfg.class_weight_boost_low_iou_every)) == 0)
+        ):
+            _maybe_boost_low_iou_class_weights(criterion, list(iou_per_class), cfg)
 
         if device.type == "cuda":
             peak = torch.cuda.max_memory_allocated() / 1024**3
