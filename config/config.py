@@ -92,15 +92,6 @@ class TrainConfig:
     # 水平翻转概率。
     hflip_prob: float = 0.5
 
-    # 是否启用多尺度 + 翻转 TTA 验证。
-    eval_multi_scale: bool = True
-    # TTA 的尺度列表。
-    eval_scales: tuple[float, ...] = (0.75, 1.0, 1.25)
-    # TTA 是否使用水平翻转融合。
-    eval_flip: bool = True
-    # TTA 验证频率（每 N epoch 执行一次；首尾 epoch 也会执行）。
-    eval_multi_scale_every: int = 5
-
     # 每 N epoch 产出一次预测可视化。
     save_vis_every: int = 20
     # 单次可视化保存样本上限。
