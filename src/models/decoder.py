@@ -4,8 +4,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from src.models.switch2Norm import NormType, make_norm
-
 
 class ConvNormReLU(nn.Sequential):
     def __init__(
@@ -16,20 +14,19 @@ class ConvNormReLU(nn.Sequential):
         s: int = 1,
         p: int = 0,
         d: int = 1,
-        norm: NormType = "bn",
     ):
         super().__init__(
             nn.Conv2d(in_ch, out_ch, kernel_size=k, stride=s, padding=p, dilation=d, bias=False),
-            make_norm(norm, out_ch),
+            nn.BatchNorm2d(out_ch),
             nn.ReLU(inplace=True),
         )
 
 
 class LearnableUpsampleBlock(nn.Module):
-    def __init__(self, channels: int, norm: NormType = "bn"):
+    def __init__(self, channels: int):
         super().__init__()
-        self.pre = ConvNormReLU(channels, channels, k=1, norm=norm)
-        self.post = ConvNormReLU(channels, channels, k=3, p=1, norm=norm)
+        self.pre = ConvNormReLU(channels, channels, k=1)
+        self.post = ConvNormReLU(channels, channels, k=3, p=1)
 
     def forward(self, x: torch.Tensor, out_size: tuple[int, int]) -> torch.Tensor:
         x = self.pre(x)
@@ -45,18 +42,17 @@ class DeepLabV3PlusDecoder(nn.Module):
         low_level_out_channels: int = 48,
         decoder_channels: int = 256,
         dropout: float = 0.1,
-        norm: NormType = "bn",
     ):
         super().__init__()
         self.low_reduce = ConvNormReLU(
-            low_level_in_channels, low_level_out_channels, k=1, norm=norm
+            low_level_in_channels, low_level_out_channels, k=1
         )
-        self.aspp_upsample = LearnableUpsampleBlock(aspp_out_channels, norm=norm)
+        self.aspp_upsample = LearnableUpsampleBlock(aspp_out_channels)
 
         in_ch = aspp_out_channels + low_level_out_channels
         self.refine = nn.Sequential(
-            ConvNormReLU(in_ch, decoder_channels, k=3, p=1, norm=norm),
-            ConvNormReLU(decoder_channels, decoder_channels, k=3, p=1, norm=norm),
+            ConvNormReLU(in_ch, decoder_channels, k=3, p=1),
+            ConvNormReLU(decoder_channels, decoder_channels, k=3, p=1),
             nn.Dropout(p=dropout),
         )
 

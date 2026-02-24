@@ -116,22 +116,16 @@ class TrainConfig:
 
     # loss_mode:
     # - "baseline": 保持旧版 CE + Focal 组合，用于对照实验
-    # - "composite": 使用 OHEM_CE + LovaszSoftmax + BoundaryLoss
-    loss_mode: str = "composite"
+    # - "ohem": 使用 OHEM CrossEntropy（仅保留困难像素）
+    loss_mode: str = "ohem"
 
     # baseline 分支参数（CE + Focal）。
     ce_weight: float = 0.75
     focal_weight: float = 0.25
     focal_gamma: float = 2.0
 
-    # composite 分支参数：
-    # total_loss = ohem_weight*OHEM_CE + lovasz_weight*Lovasz + boundary_weight*Boundary
-    ohem_weight: float = 0.5
-    lovasz_weight: float = 0.3
-    boundary_weight: float = 0.2
+    # ohem 分支参数：
     # OHEM 保留的困难像素比例（建议 0.2~0.3）。
     ohem_ratio: float = 0.25
-    # 边界监督宽度（像素），常用 2~4。
-    boundary_width: int = 3
     # 每 N epoch 打印一次 loss 子项统计（train/val）。
     report_loss_every: int = 5
