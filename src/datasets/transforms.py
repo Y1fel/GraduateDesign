@@ -28,17 +28,6 @@ def pil_hflip(im: Image.Image) -> Image.Image:
 
 
 
-def resize_pair(
-    img: Image.Image,
-    mask: Image.Image,
-    size_wh: Tuple[int, int],
-) -> Tuple[Image.Image, Image.Image]:
-    w, h = size_wh
-    img = img.resize((w, h), resample=Image.Resampling.BILINEAR)
-    mask = mask.resize((w, h), resample=Image.Resampling.NEAREST)
-    return img, mask
-
-
 def random_scale_pair(
     img: Image.Image,
     mask: Image.Image,
@@ -54,7 +43,9 @@ def random_scale_pair(
     w, h = img.size
     new_w = max(1, int(round(w * s)))
     new_h = max(1, int(round(h * s)))
-    return resize_pair(img, mask, (new_w, new_h))
+    img = img.resize((new_w, new_h), resample=Image.Resampling.BILINEAR)
+    mask = mask.resize((new_w, new_h), resample=Image.Resampling.NEAREST)
+    return img, mask
 
 
 def maybe_hflip_pair(

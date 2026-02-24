@@ -76,9 +76,6 @@ class TrainConfig:
     # Decoder 模块 dropout。
     decoder_dropout: float = 0.2
 
-    # 训练/验证统一 resize 到的目标高宽。
-    resize_h: int = 1024
-    resize_w: int = 2048
     # 随机裁剪尺寸（训练时）。
     crop_h: int = 512
     crop_w: int = 1024
