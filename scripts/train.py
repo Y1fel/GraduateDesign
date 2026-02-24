@@ -435,11 +435,6 @@ def main() -> None:
         f"{policy} (iter-based, max_iter={max_iter}, warmup_iters={cfg.warmup_iters}, "
         f"warmup_ratio={cfg.warmup_ratio:.3f}, poly_power={cfg.poly_power:.3f}, eta_min={cfg.lr_eta_min:.2e})"
     )
-    if cfg.eval_multi_scale:
-        print(
-            "[INFO] Eval-TTA schedule = "
-            f"every {cfg.eval_multi_scale_every} epochs (+first/+last), scales={list(cfg.eval_scales)}, flip={cfg.eval_flip}"
-        )
     print(f"[INFO] norm_strategy=freeze_bn={cfg.freeze_bn}")
 
     best_miou = -1.0
@@ -474,37 +469,14 @@ def main() -> None:
                 model, val_loader, criterion, device, use_amp=amp_enabled, return_loss_components=True
             )
 
-        val_metrics_single = compute_segmentation_metrics(
+        val_metrics = compute_segmentation_metrics(
             model,
             val_loader,
             device,
             cfg.num_classes,
             cfg.ignore_index,
-            scales=[1.0],
-            flip=False,
         )
 
-        run_tta_eval = (
-            cfg.eval_multi_scale
-            and (
-                epoch == 1
-                or epoch == cfg.epochs
-                or (cfg.eval_multi_scale_every > 0 and epoch % cfg.eval_multi_scale_every == 0)
-            )
-        )
-        val_metrics = val_metrics_single
-        if run_tta_eval:
-            val_metrics = compute_segmentation_metrics(
-                model,
-                val_loader,
-                device,
-                cfg.num_classes,
-                cfg.ignore_index,
-                scales=list(cfg.eval_scales),
-                flip=cfg.eval_flip,
-            )
-
-        val_miou_single = float(val_metrics_single["miou"])
         val_miou = float(val_metrics["miou"])
         recall_per_class = val_metrics["recall_per_class"]
         effective_mask = [not math.isnan(float(v)) for v in recall_per_class]
@@ -523,15 +495,9 @@ def main() -> None:
         dominant_ratio = float(pred_hist.max().item() / pred_total) if pred_total > 0 else 0.0
         dominant_class = int(torch.argmax(pred_hist).item()) if pred_total > 0 else -1
 
-        eval_mode = (
-            f"ms+flip(scales={list(cfg.eval_scales)}, flip={cfg.eval_flip})"
-            if run_tta_eval
-            else "single-scale"
-        )
         print(
             f"[EPOCH {epoch:03d}/{cfg.epochs}] train_loss={train_loss:.4f} "
-            f"val_loss={val_loss:.4f} val_mIoU(single)={val_miou_single:.4f} "
-            f"val_mIoU({eval_mode})={val_miou:.4f} val_mIoU(effective)={val_miou_effective:.4f} "
+            f"val_loss={val_loss:.4f} val_mIoU={val_miou:.4f} val_mIoU(effective)={val_miou_effective:.4f} "
             f"val_BF1={val_metrics['boundary_fscore']:.4f} val_TrimapIoU={val_metrics['trimap_iou']:.4f} "
             f"data_t={train_stats['avg_data_time']:.3f}s iter_t={train_stats['avg_compute_time']:.3f}s "
             f"grad_norm(avg)={train_stats['avg_grad_norm']:.4f} lr={float(train_stats['last_lr']):.8f} time={dt:.1f}s"
