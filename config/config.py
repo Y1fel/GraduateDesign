@@ -14,7 +14,7 @@ class TrainConfig:
     ignore_index: int = 255
 
     # 总训练 epoch 数。
-    epochs: int = 120
+    epochs: int = 50
     # 单卡 batch size。
     batch_size: int = 6
     # DataLoader 工作进程数。
@@ -107,7 +107,7 @@ class TrainConfig:
     # 是否启用稀有类感知采样器（WeightedRandomSampler）。
     use_rare_class_sampler: bool = True
     # 稀有类 ID 列表（按 19 类 id）。
-    rare_class_ids: tuple[int, ...] = (3, 16, 15, 14, 12)
+    rare_class_ids: tuple[int, ...] = (3, 5, 6, 7, 16, 15, 14, 12)
     # 样本含稀有类时的样本权重倍率。
     rare_class_weight_multiplier: float = 4.0
     # 采样器抽样数量系数（len(dataset) * factor）。
