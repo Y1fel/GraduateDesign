@@ -39,12 +39,46 @@ def _lovasz_softmax_flat(probas: torch.Tensor, labels: torch.Tensor, ignore_inde
     return torch.stack(losses).mean()
 
 
+def _safe_odd_kernel_size(kernel_size: int) -> int:
+    k = max(1, int(kernel_size))
+    # even kernel + same padding 会引发输出尺寸偏移，强制转为奇数避免边界图与标签尺寸冲突。
+    if k % 2 == 0:
+        k += 1
+    return k
+
+
 def _morphological_gradient(mask: torch.Tensor, kernel_size: int = 3) -> torch.Tensor:
-    pad = kernel_size // 2
+    k = _safe_odd_kernel_size(kernel_size)
+    pad = k // 2
     mask = mask.float().unsqueeze(1)
-    dilated = F.max_pool2d(mask, kernel_size=kernel_size, stride=1, padding=pad)
-    eroded = -F.max_pool2d(-mask, kernel_size=kernel_size, stride=1, padding=pad)
+    dilated = F.max_pool2d(mask, kernel_size=k, stride=1, padding=pad)
+    eroded = -F.max_pool2d(-mask, kernel_size=k, stride=1, padding=pad)
     return (dilated - eroded).clamp(0.0, 1.0).squeeze(1)
+
+
+def _label_boundary_map(labels: torch.Tensor, valid: torch.Tensor, boundary_width: int) -> torch.Tensor:
+    # 基于 4 邻域类别变化提取语义边界，避免把 class id 当作连续灰度值做形态学造成的伪边界。
+    edges = torch.zeros_like(labels, dtype=torch.bool)
+
+    # 水平方向相邻像素类别变化（两侧都必须是有效标签）
+    valid_h = valid[:, :, :-1] & valid[:, :, 1:]
+    diff_h = (labels[:, :, :-1] != labels[:, :, 1:]) & valid_h
+    edges[:, :, :-1] |= diff_h
+    edges[:, :, 1:] |= diff_h
+
+    # 垂直方向相邻像素类别变化（两侧都必须是有效标签）
+    valid_v = valid[:, :-1, :] & valid[:, 1:, :]
+    diff_v = (labels[:, :-1, :] != labels[:, 1:, :]) & valid_v
+    edges[:, :-1, :] |= diff_v
+    edges[:, 1:, :] |= diff_v
+
+    edge_map = edges.float()
+    k = _safe_odd_kernel_size(boundary_width)
+    if k > 1:
+        # 与 boundary_width 语义一致：将边界监督带适度膨胀。
+        pad = k // 2
+        edge_map = F.max_pool2d(edge_map.unsqueeze(1), kernel_size=k, stride=1, padding=pad).squeeze(1)
+    return edge_map
 
 
 class CombinedCEFocalLoss(nn.Module):
@@ -133,13 +167,10 @@ class CompositeSegLoss(nn.Module):
     def _boundary_loss(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
         probs = F.softmax(logits, dim=1)
         valid = targets != self.ignore_index
-        clean_targets = targets.clone()
-        clean_targets[~valid] = 0
-        gt_onehot = F.one_hot(clean_targets.long(), num_classes=self.num_classes).permute(0, 3, 1, 2).float()
 
         pred_edges = _morphological_gradient(probs.max(dim=1).values, kernel_size=self.boundary_width)
-        gt_edges = _morphological_gradient(gt_onehot.max(dim=1).values, kernel_size=self.boundary_width)
-        edge_mask = (gt_edges > 0).float() * valid.float()
+        gt_edges = _label_boundary_map(targets, valid, boundary_width=self.boundary_width)
+        edge_mask = gt_edges * valid.float()
         if edge_mask.sum() == 0:
             return logits.new_tensor(0.0)
         return ((pred_edges - gt_edges).abs() * edge_mask).sum() / edge_mask.sum().clamp_min(1.0)
