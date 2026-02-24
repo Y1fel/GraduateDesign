@@ -11,7 +11,6 @@ from src.datasets.transforms import (
     maybe_hflip_pair,
     pil_to_tensor,
     random_scale_pair,
-    resize_pair,
     normalize_img,
 )
 
@@ -33,8 +32,6 @@ class CityscapesDataset(Dataset):
         self,
         root: Path,
         split: str,
-        resize_w: int,
-        resize_h: int,
         ignore_index: int,
         training: bool,
         hflip_prob: float = 0.0,
@@ -48,8 +45,6 @@ class CityscapesDataset(Dataset):
 
         self.root = Path(root)
         self.split = split
-        self.resize_w = int(resize_w)
-        self.resize_h = int(resize_h)
         self.ignore_index = int(ignore_index)
         self.training = bool(training)
 
@@ -101,14 +96,9 @@ class CityscapesDataset(Dataset):
             mask_id = Image.open(mask_path).convert("L")
 
         if self.training:
-            base_w = max(img.width, self.resize_w)
-            base_h = max(img.height, self.resize_h)
-            img, mask_id = resize_pair(img, mask_id, (base_w, base_h))
             if self.multi_scale_range != (1.0, 1.0):
                 img, mask_id = random_scale_pair(img, mask_id, self.multi_scale_range)
             img, mask_id = maybe_hflip_pair(img, mask_id, self.hflip_prob)
-        else:
-            img, mask_id = resize_pair(img, mask_id, (self.resize_w, self.resize_h))
 
         mask_new = np.asarray(mask_id, dtype=np.uint8)
         if self.remap_to_19:

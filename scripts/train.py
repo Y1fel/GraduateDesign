@@ -327,8 +327,6 @@ def main() -> None:
     train_ds = CityscapesDataset(
         root=cfg.data_root,
         split="train",
-        resize_w=cfg.resize_w,
-        resize_h=cfg.resize_h,
         ignore_index=cfg.ignore_index,
         training=True,
         hflip_prob=cfg.hflip_prob,
@@ -340,8 +338,6 @@ def main() -> None:
     val_ds = CityscapesDataset(
         root=cfg.data_root,
         split="val",
-        resize_w=cfg.resize_w,
-        resize_h=cfg.resize_h,
         ignore_index=cfg.ignore_index,
         training=False,
     )
