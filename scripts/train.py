@@ -78,6 +78,7 @@ def _compute_class_weights(train_ds: CityscapesDataset, cfg: TrainConfig) -> tor
         mask_34 = np.array(Image.open(mask_path).convert("L"), dtype=np.uint8)
         valid = mask_34 <= 33
         mapped = remap[mask_34[valid]]
+        mapped = mapped[mapped < cfg.num_classes]
         binc = np.bincount(mapped, minlength=cfg.num_classes)
         counts += binc.astype(np.float64)
 
