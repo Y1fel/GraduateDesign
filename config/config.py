@@ -16,26 +16,26 @@ class TrainConfig:
     # 总训练 epoch 数。
     epochs: int = 50
     # 单卡 batch size。
-    batch_size: int = 6
+    batch_size: int = 8
     # DataLoader 工作进程数。
-    num_workers: int = 8
+    num_workers: int = 12
     # 是否持久化 worker，减少每个 epoch 重启开销。
     persistent_workers: bool = True
     # 每个 worker 预取 batch 数。
-    prefetch_factor: int = 4
+    prefetch_factor: int = 3
 
     # 初始学习率（iter 级调度的基准值）。
-    lr_0: float = 2e-4
+    lr_0: float = 0.002
     # 权重衰减（L2 正则）。
-    weight_decay: float = 1e-3
+    weight_decay: float = 1e-4
     # 学习率下限（poly/cosine 调度最终不低于该值）。
     lr_eta_min: float = 5e-5
     # 学习率策略："poly" 或 "cosine"。
     lr_policy: str = "poly"
     # poly 调度幂指数，lr = lr0 * (1-progress)^poly_power。
     poly_power: float = 0.9
-    # warmup 迭代数（iter 级），前期线性从 warmup_ratio*lr0 增长到 lr0。
-    warmup_iters: int = 2000
+    # warmup 迭代数（iter 级），前期线性从 warmup_r atio*lr0 增长到 lr0。
+    warmup_iters: int = 3000
     # warmup 起始比例。
     warmup_ratio: float = 0.1
 
@@ -68,17 +68,17 @@ class TrainConfig:
     class_weight_boost_factor: float = 1.10
 
     # 主干网络输出步长（常见 8/16）。
-    output_stride: int = 16
+    output_stride: int = 8
     # 是否加载 backbone ImageNet 预训练权重。
     backbone_pretrained: bool = True
     # ASPP 模块 dropout。
-    aspp_dropout: float = 0.1
+    aspp_dropout: float = 0.05
     # Decoder 模块 dropout。
-    decoder_dropout: float = 0.2
+    decoder_dropout: float = 0.15
 
     # 随机裁剪尺寸（训练时）。
-    crop_h: int = 512
-    crop_w: int = 1024
+    crop_h: int = 768
+    crop_w: int = 768
     # 随机裁剪重试次数（用于控制类别分布约束）。
     crop_retry: int = 10
     # 单类在 crop 中最大占比，超过时重采样（防止纯背景块）。
@@ -106,7 +106,7 @@ class TrainConfig:
     # 稀有类 ID 列表（按 19 类 id）。
     rare_class_ids: tuple[int, ...] = (3, 5, 6, 7, 16, 15, 14, 12)
     # 样本含稀有类时的样本权重倍率。
-    rare_class_weight_multiplier: float = 4.0
+    rare_class_weight_multiplier: float = 2.0
     # 采样器抽样数量系数（len(dataset) * factor）。
     sampler_num_samples_factor: float = 1.0
 
@@ -122,7 +122,7 @@ class TrainConfig:
     focal_gamma: float = 2.0
 
     # ohem 分支参数：
-    # OHEM 保留的困难像素比例（建议 0.2~0.3）。
-    ohem_ratio: float = 0.25
+    # OHEM 保留的困难像素比例
+    ohem_ratio: float = 0.3
     # 每 N epoch 打印一次 loss 子项统计（train/val）。
     report_loss_every: int = 5
