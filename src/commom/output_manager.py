@@ -53,7 +53,7 @@ class OutputManager:
         if not self.loss_components_csv.exists():
             with self.loss_components_csv.open("w", newline="", encoding="utf-8") as f:
                 w = csv.writer(f)
-                w.writerow(["epoch", "split", "ohem_ce", "total"])
+                w.writerow(["epoch", "split", "ohem_ce", "boundary", "total"])
 
     def append_metrics(
         self,
@@ -105,6 +105,7 @@ class OutputManager:
         epoch: int,
         split: str,
         ohem_ce: float,
+        boundary: float,
         total: float,
     ) -> None:
         with self.loss_components_csv.open("a", newline="", encoding="utf-8") as f:
@@ -113,5 +114,6 @@ class OutputManager:
                 epoch,
                 split,
                 f"{ohem_ce:.6f}",
+                f"{boundary:.6f}",
                 f"{total:.6f}",
             ])
