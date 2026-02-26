@@ -114,6 +114,7 @@ class TrainConfig:
     # loss_mode:
     # - "baseline": 保持旧版 CE + Focal 组合，用于对照实验
     # - "ohem": 使用 OHEM CrossEntropy（仅保留困难像素）
+    # - "ohem_boundary": 使用 OHEM + Boundary Loss 组合
     loss_mode: str = "ohem"
 
     # baseline 分支参数（CE + Focal）。
@@ -124,5 +125,12 @@ class TrainConfig:
     # ohem 分支参数：
     # OHEM 保留的困难像素比例
     ohem_ratio: float = 0.3
+    # OHEM + Boundary 分支参数：
+    # 总损失中 OHEM CE 的权重
+    ohem_weight: float = 0.8
+    # 总损失中 Boundary Loss 的权重
+    boundary_weight: float = 0.2
+    # 边界提取核尺寸（建议奇数）
+    boundary_kernel_size: int = 3
     # 每 N epoch 打印一次 loss 子项统计（train/val）。
     report_loss_every: int = 5

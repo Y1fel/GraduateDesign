@@ -18,7 +18,7 @@ from src.models.deeplabv3_plus import DeepLabV3Plus
 from src.datasets.cityscapes_labels import CITYSCAPES_19_CLASS_NAMES, CITYSCAPES_19_ID2COLOR
 from src.viz.visualizer import save_predictions_triplet
 from config.config import TrainConfig
-from src.losses.combined_loss import CombinedCEFocalLoss, OHEMCELoss
+from src.losses.combined_loss import CombinedCEFocalLoss, OHEMBoundaryLoss, OHEMCELoss
 
 
 def freeze_bn(model):
@@ -182,7 +182,7 @@ def train_one_epoch(
     data_time_sum = 0.0
     iter_compute_time_sum = 0.0
     loop_t = time.perf_counter()
-    loss_components_sum = {"ohem_ce": 0.0, "total": 0.0}
+    loss_components_sum = None
 
     for _it, (imgs, masks, _names) in enumerate(loader):
         global_iter = global_iter_start + _it
@@ -218,7 +218,9 @@ def train_one_epoch(
         bs = imgs.size(0)
         total_loss += loss.item() * bs
         if loss_components is not None:
-            for k in loss_components_sum:
+            if loss_components_sum is None:
+                loss_components_sum = {k: 0.0 for k in loss_components}
+            for k in loss_components:
                 loss_components_sum[k] += float(loss_components[k]) * bs
         n += bs
         iter_compute_time_sum += time.perf_counter() - iter_t
@@ -232,7 +234,11 @@ def train_one_epoch(
         "avg_compute_time": iter_compute_time_sum / max(grad_steps, 1),
         "last_lr": optimizer.param_groups[0]["lr"],
         "iters": grad_steps,
-        "loss_components": ({k: v / max(n, 1) for k, v in loss_components_sum.items()} if return_loss_components else None),
+        "loss_components": (
+            {k: v / max(n, 1) for k, v in loss_components_sum.items()}
+            if return_loss_components and loss_components_sum is not None
+            else None
+        ),
     }
 
 
@@ -241,7 +247,7 @@ def evaluate_loss(model, loader, criterion, device, use_amp: bool, return_loss_c
     model.eval()
     total_loss = 0.0
     n = 0
-    loss_components_sum = {"ohem_ce": 0.0, "total": 0.0}
+    loss_components_sum = None
 
     for imgs, masks, _names in loader:
         imgs = imgs.to(device, non_blocking=True)
@@ -258,12 +264,16 @@ def evaluate_loss(model, loader, criterion, device, use_amp: bool, return_loss_c
         bs = imgs.size(0)
         total_loss += loss.item() * bs
         if loss_components is not None:
-            for k in loss_components_sum:
+            if loss_components_sum is None:
+                loss_components_sum = {k: 0.0 for k in loss_components}
+            for k in loss_components:
                 loss_components_sum[k] += float(loss_components[k]) * bs
         n += bs
 
     avg_loss = total_loss / max(n, 1)
     if return_loss_components:
+        if loss_components_sum is None:
+            return avg_loss, None
         return avg_loss, {k: v / max(n, 1) for k, v in loss_components_sum.items()}
     return avg_loss
 
@@ -385,8 +395,10 @@ def main() -> None:
     model = model.to(device)
 
     loss_mode = str(cfg.loss_mode).lower()
-    if loss_mode not in {"baseline", "ohem"}:
-        raise ValueError(f"Unsupported loss_mode: {cfg.loss_mode}. Use 'baseline' or 'ohem'.")
+    if loss_mode == "ohem+boundary":
+        loss_mode = "ohem_boundary"
+    if loss_mode not in {"baseline", "ohem", "ohem_boundary"}:
+        raise ValueError(f"Unsupported loss_mode: {cfg.loss_mode}. Use 'baseline', 'ohem' or 'ohem_boundary'.")
 
     class_weight_strategy = "power_inverse" if loss_mode == "baseline" else None
     class_weights = (
@@ -403,11 +415,20 @@ def main() -> None:
             label_smoothing=cfg.label_smoothing,
             ignore_index=cfg.ignore_index,
         ).to(device)
-    else:
+    elif loss_mode == "ohem":
         criterion = OHEMCELoss(
             ignore_index=cfg.ignore_index,
             ohem_ratio=cfg.ohem_ratio,
             class_weights=class_weights,
+        ).to(device)
+    else:
+        criterion = OHEMBoundaryLoss(
+            ignore_index=cfg.ignore_index,
+            ohem_ratio=cfg.ohem_ratio,
+            class_weights=class_weights,
+            ohem_weight=cfg.ohem_weight,
+            boundary_weight=cfg.boundary_weight,
+            boundary_kernel_size=cfg.boundary_kernel_size,
         ).to(device)
     if cfg.use_class_weights and hasattr(criterion, "class_weights") and criterion.class_weights is not None:
         print(f"[INFO] class_weights={criterion.class_weights.detach().cpu().tolist()}")
@@ -528,13 +549,15 @@ def main() -> None:
         ):
             trc = train_stats["loss_components"]
             vac = val_loss_components
+            tr_boundary = float(trc.get("boundary", 0.0))
+            va_boundary = float(vac.get("boundary", 0.0))
             print(
                 "[LOSS-COMP] "
-                f"epoch={epoch:03d} train(ohem={trc['ohem_ce']:.4f}, total={trc['total']:.4f}) "
-                f"val(ohem={vac['ohem_ce']:.4f}, total={vac['total']:.4f})"
+                f"epoch={epoch:03d} train(ohem={trc['ohem_ce']:.4f}, boundary={tr_boundary:.4f}, total={trc['total']:.4f}) "
+                f"val(ohem={vac['ohem_ce']:.4f}, boundary={va_boundary:.4f}, total={vac['total']:.4f})"
             )
-            out.append_loss_components(epoch, "train", trc["ohem_ce"], trc["total"])
-            out.append_loss_components(epoch, "val", vac["ohem_ce"], vac["total"])
+            out.append_loss_components(epoch, "train", trc["ohem_ce"], tr_boundary, trc["total"])
+            out.append_loss_components(epoch, "val", vac["ohem_ce"], va_boundary, vac["total"])
 
         valid_rows = [row for row in per_class_rows if not math.isnan(row[2])]
         if valid_rows:
