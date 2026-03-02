@@ -104,7 +104,7 @@ class TrainConfig:
     # 是否启用稀有类感知采样器（WeightedRandomSampler）。
     use_rare_class_sampler: bool = True
     # 稀有类 ID 列表（按 19 类 id）。
-    rare_class_ids: tuple[int, ...] = (3, 5, 6, 7, 16, 15, 14, 12)
+    rare_class_ids: tuple[int, ...] = (3, 4, 5, 6, 16, 15, 14, 17)
     # 样本含稀有类时的样本权重倍率。
     rare_class_weight_multiplier: float = 2.0
     # 采样器抽样数量系数（len(dataset) * factor）。
@@ -115,7 +115,7 @@ class TrainConfig:
     # - "baseline": 保持旧版 CE + Focal 组合，用于对照实验
     # - "ohem": 使用 OHEM CrossEntropy（仅保留困难像素）
     # - "ohem_boundary": 使用 OHEM + Boundary Loss 组合
-    loss_mode: str = "ohem"
+    loss_mode: str = "ohem_boundary"
 
     # baseline 分支参数（CE + Focal）。
     ce_weight: float = 0.75
@@ -127,9 +127,9 @@ class TrainConfig:
     ohem_ratio: float = 0.3
     # OHEM + Boundary 分支参数：
     # 总损失中 OHEM CE 的权重
-    ohem_weight: float = 0.8
+    ohem_weight: float = 1
     # 总损失中 Boundary Loss 的权重
-    boundary_weight: float = 0.2
+    boundary_weight: float = 0.1
     # 边界提取核尺寸（建议奇数）
     boundary_kernel_size: int = 3
     # 每 N epoch 打印一次 loss 子项统计（train/val）。
