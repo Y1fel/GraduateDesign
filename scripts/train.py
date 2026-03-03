@@ -387,6 +387,7 @@ def main() -> None:
     model = DeepLabV3Plus(
         num_classes=cfg.num_classes,
         backbone_pretrained=cfg.backbone_pretrained,
+        backbone_name=cfg.backbone_name,
         output_stride=cfg.output_stride,
         aspp_dropout=cfg.aspp_dropout,
         decoder_dropout=cfg.decoder_dropout,
