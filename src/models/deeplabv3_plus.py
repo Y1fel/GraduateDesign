@@ -12,6 +12,7 @@ class DeepLabV3Plus(nn.Module):
         self,
         num_classes: int,
         backbone_pretrained: bool = True,
+        backbone_name: str = "rsnet-50",
         output_stride: int = 16,
         aspp_out_channels: int = 256,
         decoder_channels: int = 256,
@@ -20,7 +21,11 @@ class DeepLabV3Plus(nn.Module):
     ):
         super().__init__()
 
-        self.backbone = ResNetBackbone(pretrained=backbone_pretrained, output_stride=output_stride)
+        self.backbone = ResNetBackbone(
+            pretrained=backbone_pretrained,
+            output_stride=output_stride,
+            backbone_name=backbone_name,
+        )
 
         # Common atrous rates: OS=16 -> (6,12,18), OS=8 -> (12,24,36)
         if output_stride == 16:

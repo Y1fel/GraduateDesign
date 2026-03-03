@@ -71,6 +71,8 @@ class TrainConfig:
     output_stride: int = 8
     # 是否加载 backbone ImageNet 预训练权重。
     backbone_pretrained: bool = True
+    # 主干网络类型：支持 "rsnet-50"、"rs-net-100"。
+    backbone_name: str = "rsnet-50"
     # ASPP 模块 dropout。
     aspp_dropout: float = 0.05
     # Decoder 模块 dropout。
