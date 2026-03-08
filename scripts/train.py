@@ -352,6 +352,12 @@ def main() -> None:
         random_crop_size=(cfg.crop_w, cfg.crop_h),
         crop_retry=cfg.crop_retry,
         crop_max_class_ratio=cfg.crop_max_class_ratio,
+        color_jitter_prob=cfg.color_jitter_prob,
+        color_jitter_brightness=cfg.color_jitter_brightness,
+        color_jitter_contrast=cfg.color_jitter_contrast,
+        color_jitter_saturation=cfg.color_jitter_saturation,
+        gaussian_blur_prob=cfg.gaussian_blur_prob,
+        gaussian_blur_radius_range=(cfg.gaussian_blur_radius_min, cfg.gaussian_blur_radius_max),
     )
     val_ds = CityscapesDataset(
         root=cfg.data_root,

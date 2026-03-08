@@ -3,7 +3,7 @@ from typing import Tuple
 
 import numpy as np
 import torch
-from PIL import Image
+from PIL import Image, ImageEnhance, ImageFilter
 
 from src.commom.constants import IMAGENET_MEAN, IMAGENET_STD
 
@@ -56,6 +56,43 @@ def maybe_hflip_pair(
     if random.random() < prob:
         return pil_hflip(img), pil_hflip(mask)
     return img, mask
+
+
+def maybe_color_jitter(
+    img: Image.Image,
+    prob: float,
+    brightness: float,
+    contrast: float,
+    saturation: float,
+) -> Image.Image:
+    if random.random() >= prob:
+        return img
+
+    if brightness > 0:
+        factor = random.uniform(max(0.0, 1.0 - brightness), 1.0 + brightness)
+        img = ImageEnhance.Brightness(img).enhance(factor)
+    if contrast > 0:
+        factor = random.uniform(max(0.0, 1.0 - contrast), 1.0 + contrast)
+        img = ImageEnhance.Contrast(img).enhance(factor)
+    if saturation > 0:
+        factor = random.uniform(max(0.0, 1.0 - saturation), 1.0 + saturation)
+        img = ImageEnhance.Color(img).enhance(factor)
+    return img
+
+
+def maybe_gaussian_blur(
+    img: Image.Image,
+    prob: float,
+    radius_range: Tuple[float, float],
+) -> Image.Image:
+    if random.random() >= prob:
+        return img
+
+    lo, hi = float(radius_range[0]), float(radius_range[1])
+    if hi < lo:
+        lo, hi = hi, lo
+    radius = random.uniform(max(0.0, lo), max(0.0, hi))
+    return img.filter(ImageFilter.GaussianBlur(radius=radius))
 
 
 def pil_to_tensor(img: Image.Image) -> torch.Tensor:

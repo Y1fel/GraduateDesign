@@ -12,6 +12,8 @@ from src.datasets.transforms import (
     pil_to_tensor,
     random_scale_pair,
     normalize_img,
+    maybe_color_jitter,
+    maybe_gaussian_blur,
 )
 
 
@@ -40,6 +42,12 @@ class CityscapesDataset(Dataset):
         crop_retry: int = 1,
         crop_max_class_ratio: float = 1.0,
         remap_to_19: bool = True,
+        color_jitter_prob: float = 0.0,
+        color_jitter_brightness: float = 0.0,
+        color_jitter_contrast: float = 0.0,
+        color_jitter_saturation: float = 0.0,
+        gaussian_blur_prob: float = 0.0,
+        gaussian_blur_radius_range: Tuple[float, float] = (0.0, 0.0),
     ) -> None:
         assert split in ("train", "val", "test"), f"split must be train/val/test, got {split}"
 
@@ -54,6 +62,16 @@ class CityscapesDataset(Dataset):
         self.crop_retry = max(1, int(crop_retry))
         self.crop_max_class_ratio = float(crop_max_class_ratio)
         self.remap_to_19 = bool(remap_to_19)
+
+        self.color_jitter_prob = float(color_jitter_prob)
+        self.color_jitter_brightness = float(color_jitter_brightness)
+        self.color_jitter_contrast = float(color_jitter_contrast)
+        self.color_jitter_saturation = float(color_jitter_saturation)
+        self.gaussian_blur_prob = float(gaussian_blur_prob)
+        self.gaussian_blur_radius_range = (
+            float(gaussian_blur_radius_range[0]),
+            float(gaussian_blur_radius_range[1]),
+        )
         self._label_id_to_train_id = np.asarray(CITYSCAPES_34_TO_19, dtype=np.uint8)
 
         self.images_root = self.root / "leftImg8bit" / split
@@ -99,6 +117,18 @@ class CityscapesDataset(Dataset):
             if self.multi_scale_range != (1.0, 1.0):
                 img, mask_id = random_scale_pair(img, mask_id, self.multi_scale_range)
             img, mask_id = maybe_hflip_pair(img, mask_id, self.hflip_prob)
+            img = maybe_color_jitter(
+                img,
+                prob=self.color_jitter_prob,
+                brightness=self.color_jitter_brightness,
+                contrast=self.color_jitter_contrast,
+                saturation=self.color_jitter_saturation,
+            )
+            img = maybe_gaussian_blur(
+                img,
+                prob=self.gaussian_blur_prob,
+                radius_range=self.gaussian_blur_radius_range,
+            )
 
         mask_new = np.asarray(mask_id, dtype=np.uint8)
         if self.remap_to_19:
