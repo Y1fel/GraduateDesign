@@ -117,7 +117,7 @@ class TrainConfig:
     # - "baseline": 保持旧版 CE + Focal 组合，用于对照实验
     # - "ohem": 使用 OHEM CrossEntropy（仅保留困难像素）
     # - "ohem_boundary": 使用 OHEM + Boundary Loss 组合
-    loss_mode: str = "ohem_boundary"
+    loss_mode: str = "ohem"
 
     # baseline 分支参数（CE + Focal）。
     ce_weight: float = 0.75

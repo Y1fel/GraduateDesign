@@ -46,16 +46,16 @@ CITYSCAPES_34_TO_19 = [
     255,  # 06 ground
     0,    # 07 road
     1,    # 08 sidewalk
-    255,  # 09 parking (ignored)
+    0,  # 09 parking -> road
     255,  # 10 rail track
     2,    # 11 building
     3,    # 12 wall
     4,    # 13 fence
-    255,    # 14 guard rail (ignored)
-    255,    # 15 bridge (ignored)
-    255,    # 16 tunnel (ignored)
+    4,  # 14 guard rail -> fence
+    2,  # 15 bridge -> building
+    2,  # 16 tunnel -> building
     5,    # 17 pole
-    255,    # 18 polegroup (ignored)
+    5,  # 18 polegroup -> pole
     6,    # 19 traffic light
     7,    # 20 traffic sign
     8,    # 21 vegetation
@@ -66,8 +66,8 @@ CITYSCAPES_34_TO_19 = [
     13,   # 26 car
     14,   # 27 truck
     15,   # 28 bus
-    255,   # 29 caravan (ignored)
-    255,   # 30 trailer (ignored)
+    14,  # 29 caravan -> truck
+    14,  # 30 trailer -> truck
     16,   # 31 train
     17,   # 32 motorcycle
     18,   # 33 bicycle
