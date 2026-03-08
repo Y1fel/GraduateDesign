@@ -46,16 +46,16 @@ CITYSCAPES_34_TO_19 = [
     255,  # 06 ground
     0,    # 07 road
     1,    # 08 sidewalk
-    0,    # 09 parking -> road
+    255,  # 09 parking (ignored)
     255,  # 10 rail track
     2,    # 11 building
     3,    # 12 wall
     4,    # 13 fence
-    4,    # 14 guard rail -> fence
-    2,    # 15 bridge -> building
-    2,    # 16 tunnel -> building
+    255,    # 14 guard rail (ignored)
+    255,    # 15 bridge (ignored)
+    255,    # 16 tunnel (ignored)
     5,    # 17 pole
-    5,    # 18 polegroup -> pole
+    255,    # 18 polegroup (ignored)
     6,    # 19 traffic light
     7,    # 20 traffic sign
     8,    # 21 vegetation
@@ -66,33 +66,33 @@ CITYSCAPES_34_TO_19 = [
     13,   # 26 car
     14,   # 27 truck
     15,   # 28 bus
-    14,   # 29 caravan -> truck
-    14,   # 30 trailer -> truck
+    255,   # 29 caravan (ignored)
+    255,   # 30 trailer (ignored)
     16,   # 31 train
     17,   # 32 motorcycle
     18,   # 33 bicycle
 ]
 
 CITYSCAPES_19_CLASS_NAMES = [
-    "road",
-    "sidewalk",
-    "building",
-    "wall",
-    "fence",
-    "pole",
-    "traffic light",
-    "traffic sign",
-    "vegetation",
-    "terrain",
-    "sky",
-    "person",
-    "rider",
-    "car",
-    "truck",
-    "bus",
-    "train",
-    "motorcycle",
-    "bicycle",
+    "road",    #0
+    "sidewalk",#1
+    "building",#2
+    "wall",    #3
+    "fence",   #4
+    "pole",    #5
+    "traffic light",   #6
+    "traffic sign",    #7
+    "vegetation",      #8
+    "terrain",         #9
+    "sky",             #10
+    "person",          #11
+    "rider",           #12
+    "car",             #13
+    "truck",           #14
+    "bus",             #15
+    "train",           #16
+    "motorcycle",      #17
+    "bicycle",         #18
 ]
 
 # official Cityscapes palette for labelId 0..33

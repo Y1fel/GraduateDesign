@@ -392,7 +392,8 @@ def main() -> None:
         aspp_dropout=cfg.aspp_dropout,
         decoder_dropout=cfg.decoder_dropout,
     )
-
+    ratio = 3000 / (50 * len(train_loader))
+    print("ratio:", ratio)
     model = model.to(device)
 
     loss_mode = str(cfg.loss_mode).lower()

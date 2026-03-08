@@ -22,7 +22,7 @@ class TrainConfig:
     # 是否持久化 worker，减少每个 epoch 重启开销。
     persistent_workers: bool = True
     # 每个 worker 预取 batch 数。
-    prefetch_factor: int = 3
+    prefetch_factor: int = 4
 
     # 初始学习率（iter 级调度的基准值）。
     lr_0: float = 0.002
@@ -65,14 +65,14 @@ class TrainConfig:
     # 触发低 IoU 提升的阈值（如 <0.2）。
     class_weight_boost_low_iou_threshold: float = 0.2
     # 触发后权重乘法因子（如 1.15 代表 +15%）。
-    class_weight_boost_factor: float = 1.10
+    class_weight_boost_factor: float = 1.05
 
     # 主干网络输出步长（常见 8/16）。
     output_stride: int = 8
     # 是否加载 backbone ImageNet 预训练权重。
     backbone_pretrained: bool = True
     # 主干网络类型：支持 "rsnet-50"、"rs-net-100"。
-    backbone_name: str = "rsnet-50"
+    backbone_name: str = "rsnet-100"
     # ASPP 模块 dropout。
     aspp_dropout: float = 0.05
     # Decoder 模块 dropout。
@@ -106,7 +106,7 @@ class TrainConfig:
     # 是否启用稀有类感知采样器（WeightedRandomSampler）。
     use_rare_class_sampler: bool = True
     # 稀有类 ID 列表（按 19 类 id）。
-    rare_class_ids: tuple[int, ...] = (3, 4, 5, 6, 16, 15, 14, 17)
+    rare_class_ids: tuple[int, ...] = (3,4,5,6,9,12,16,17)
     # 样本含稀有类时的样本权重倍率。
     rare_class_weight_multiplier: float = 2.0
     # 采样器抽样数量系数（len(dataset) * factor）。
@@ -126,12 +126,12 @@ class TrainConfig:
 
     # ohem 分支参数：
     # OHEM 保留的困难像素比例
-    ohem_ratio: float = 0.3
+    ohem_ratio: float = 0.25
     # OHEM + Boundary 分支参数：
     # 总损失中 OHEM CE 的权重
     ohem_weight: float = 1
     # 总损失中 Boundary Loss 的权重
-    boundary_weight: float = 0.1
+    boundary_weight: float = 0.05
     # 边界提取核尺寸（建议奇数）
     boundary_kernel_size: int = 3
     # 每 N epoch 打印一次 loss 子项统计（train/val）。
