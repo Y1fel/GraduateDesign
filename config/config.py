@@ -93,6 +93,20 @@ class TrainConfig:
     # 水平翻转概率。
     hflip_prob: float = 0.5
 
+    # 颜色抖动概率（仅训练集图像）。
+    color_jitter_prob: float = 0.0
+    # 亮度抖动幅度，最终系数范围约为 [1-v, 1+v]。
+    color_jitter_brightness: float = 0.0
+    # 对比度抖动幅度。
+    color_jitter_contrast: float = 0.0
+    # 饱和度抖动幅度。
+    color_jitter_saturation: float = 0.0
+    # 高斯模糊概率（仅训练集图像）。
+    gaussian_blur_prob: float = 0.0
+    # 高斯模糊半径最小/最大值。
+    gaussian_blur_radius_min: float = 0.0
+    gaussian_blur_radius_max: float = 0.0
+
     # 每 N epoch 产出一次预测可视化。
     save_vis_every: int = 20
     # 单次可视化保存样本上限。
