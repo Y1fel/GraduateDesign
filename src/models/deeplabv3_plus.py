@@ -50,12 +50,17 @@ class DeepLabV3Plus(nn.Module):
         )
 
         self.classifier = nn.Conv2d(decoder_channels, num_classes, kernel_size=1)
+        self.aux_classifier = nn.Conv2d(self.backbone.out_channels, num_classes, kernel_size=1)
 
         nn.init.normal_(self.classifier.weight, mean=0.0, std=0.01)
         if self.classifier.bias is not None:
             nn.init.constant_(self.classifier.bias, 0.0)
 
-    def forward(self, x: torch.Tensor):
+        nn.init.normal_(self.aux_classifier.weight, mean=0.0, std=0.01)
+        if self.aux_classifier.bias is not None:
+            nn.init.constant_(self.aux_classifier.bias, 0.0)
+
+    def forward(self, x: torch.Tensor, return_aux: bool = False):
         input_size = x.shape[-2:]
 
         low_level, _, high_level = self.backbone(x)
@@ -63,4 +68,10 @@ class DeepLabV3Plus(nn.Module):
         dec_feat = self.decoder(low_level, aspp_feat)
         logits = self.classifier(dec_feat)
         logits = F.interpolate(logits, size=input_size, mode="bilinear", align_corners=False)
-        return logits
+
+        if not return_aux:
+            return logits
+
+        aux_logits = self.aux_classifier(high_level)
+        aux_logits = F.interpolate(aux_logits, size=input_size, mode="bilinear", align_corners=False)
+        return logits, aux_logits

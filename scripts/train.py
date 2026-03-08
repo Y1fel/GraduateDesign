@@ -197,12 +197,20 @@ def train_one_epoch(
         optimizer.zero_grad(set_to_none=True)
 
         with torch.amp.autocast('cuda', enabled=use_amp):
-            logits = model(imgs)
+            logits, aux_logits = model(imgs, return_aux=True)
             if return_loss_components:
-                loss, loss_components = criterion(logits, masks, return_components=True)
+                main_loss, loss_components = criterion(logits, masks, return_components=True)
+                aux_loss = criterion(aux_logits, masks)
+                loss_components = dict(loss_components)
+                loss_components["main"] = float(main_loss.detach())
+                loss_components["aux"] = float(aux_loss.detach())
             else:
-                loss = criterion(logits, masks)
+                main_loss = criterion(logits, masks)
+                aux_loss = criterion(aux_logits, masks)
                 loss_components = None
+            loss = main_loss + float(cfg.aux_loss_weight) * aux_loss
+            if loss_components is not None:
+                loss_components["total"] = float(loss.detach())
 
         scaler.scale(loss).backward()
         if use_amp:

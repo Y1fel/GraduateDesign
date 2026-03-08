@@ -77,6 +77,8 @@ class TrainConfig:
     aspp_dropout: float = 0.05
     # Decoder 模块 dropout。
     decoder_dropout: float = 0.15
+    # 辅助监督头（Aux Head）损失权重，总损失 = main + aux_loss_weight * aux。
+    aux_loss_weight: float = 0.3
 
     # 随机裁剪尺寸（训练时）。
     crop_h: int = 768
