@@ -152,3 +152,7 @@ class TrainConfig:
     boundary_kernel_size: int = 3
     # 每 N epoch 打印一次 loss 子项统计（train/val）。
     report_loss_every: int = 5
+
+@dataclass
+class MobileTrainConfig(TrainConfig):
+    output_stride: int = 16 #32
