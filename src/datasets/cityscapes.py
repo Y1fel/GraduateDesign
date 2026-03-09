@@ -18,18 +18,6 @@ from src.datasets.transforms import (
 
 
 class CityscapesDataset(Dataset):
-    """Cityscapes loader based on official folder layout.
-
-    Expected root structure:
-      root/
-        leftImg8bit/{train,val,test}/<city>/*_leftImg8bit.png
-        gtFine/{train,val}/<city>/*_gtFine_labelIds.png
-
-    Note:
-      - split=test has no public gt labels, so training/eval should use train/val.
-      - masks are single-channel labelId maps in [0,33] with ignored pixels usually 255.
-    """
-
     def __init__(
         self,
         root: Path,

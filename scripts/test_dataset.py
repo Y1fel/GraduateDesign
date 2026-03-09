@@ -4,36 +4,24 @@ from pathlib import Path
 
 import numpy as np
 import torch
+import time
 from PIL import Image
+from numpy.ma.extras import average
 from torch.utils.data import DataLoader
 
 from config.config import TrainConfig
 from src.datasets.cityscapes import CityscapesDataset
 from src.datasets.cityscapes_labels import CITYSCAPES_19_ID2COLOR
 from src.models.deeplabv3_plus import DeepLabV3Plus
+from src.eval.mIoU import compute_segmentation_metrics
 
-# 直接运行脚本时使用的固定配置（无命令行参数）
 SAVE_COLOR = True
 OUT_DIR_NAME = "test_predictions"
 
 
 def _find_best_ckpt(cfg: TrainConfig) -> Path:
-    # 优先使用固定路径 outputs/best.pth
     direct_best = cfg.outputs_root / "best.pth"
-    if direct_best.exists():
-        return direct_best
-
-    # 否则在训练输出目录中找最新实验的 checkpoints/best.pth
-    run_dirs = sorted(cfg.outputs_root.glob("cityscapes_deeplabv3plus_*/checkpoints/best.pth"))
-    if run_dirs:
-        return run_dirs[-1]
-
-    raise FileNotFoundError(
-        "未找到 best checkpoint。请确认存在以下任一路径：\n"
-        f"1) {direct_best}\n"
-        f"2) {cfg.outputs_root}/cityscapes_deeplabv3plus_*/checkpoints/best.pth"
-    )
-
+    return direct_best
 
 def _build_model(cfg: TrainConfig, ckpt_path: Path, device: torch.device) -> DeepLabV3Plus:
     model = DeepLabV3Plus(
@@ -79,7 +67,7 @@ def _build_save_paths(out_dir: Path, rel_name: str) -> tuple[Path, Path]:
 def main() -> None:
     cfg = TrainConfig()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
+    total_time=0
     ckpt_path = _find_best_ckpt(cfg)
     out_dir = cfg.outputs_root / OUT_DIR_NAME
 
@@ -92,7 +80,7 @@ def main() -> None:
     )
     test_loader = DataLoader(
         test_ds,
-        batch_size=cfg.batch_size,
+        batch_size=12,#cfg.batch_size,
         shuffle=False,
         num_workers=cfg.num_workers,
         pin_memory=(device.type == "cuda"),
@@ -106,7 +94,7 @@ def main() -> None:
     total = len(test_ds)
     seen = 0
 
-    print("[INFO] 开始测试集推理")
+    print("[INFO] Begin")
     print(f"[INFO] data_root={cfg.data_root}")
     print(f"[INFO] total_samples={total}, batch_size={cfg.batch_size}, device={device}")
     print(f"[INFO] ckpt={ckpt_path}")
@@ -115,10 +103,19 @@ def main() -> None:
     use_amp = device.type == "cuda"
     for imgs, _masks, names in test_loader:
         imgs = imgs.to(device, non_blocking=True)
+        if device.type == "cuda":
+            torch.cuda.synchronize()
+        t0 = time.perf_counter()
 
         with torch.amp.autocast("cuda", enabled=use_amp):
             logits = model(imgs)
         preds = torch.argmax(logits, dim=1).cpu().numpy()
+
+        if device.type == "cuda":
+            torch.cuda.synchronize()
+        dt = time.perf_counter() - t0
+
+        total_time += dt
 
         for pred, rel_name in zip(preds, names):
             train_id_path, color_path = _build_save_paths(out_dir, rel_name)
@@ -129,8 +126,12 @@ def main() -> None:
         seen += imgs.size(0)
         print(f"[INFO] progress: {seen}/{total}")
 
-    print("✅ 测试集推理完成")
-
+    fps = total / max(total_time, 1e-12)
+    average_ms = (total_time / max(total, 1)) * 1000.0
+    print("[INFO] Done")
+    print(f"[METRIC] infer_total_time={total_time:.4f}s")
+    print(f"[METRIC] infer_avg_time_per_image={average_ms:.3f}ms")
+    print(f"[METRIC] FPS={fps:.2f}")
 
 if __name__ == "__main__":
     main()

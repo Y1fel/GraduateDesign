@@ -8,7 +8,6 @@ from PIL import Image
 
 RGBTuple = Tuple[int, int, int]  # (r,g,b)
 
-# search for .csv and transform
 def load_class_dict_csv(
     csv_path: Union[str, Path],
 ) -> Optional[Tuple[Dict[RGBTuple, int], List[RGBTuple], List[str]]]:

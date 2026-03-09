@@ -9,21 +9,14 @@ from src.commom.constants import IMAGENET_MEAN, IMAGENET_STD
 
 
 def normalize_img(img_t: torch.Tensor) -> torch.Tensor:
-    """
-    Normalize image tensor with ImageNet statistics.
-    img_t: (3,H,W), float in [0,1]
-    """
-    # Pair with save_predictions_triplet denormalization in src/viz/visualizer.py
     mean = torch.tensor(IMAGENET_MEAN, dtype=img_t.dtype, device=img_t.device).view(3, 1, 1)
     std = torch.tensor(IMAGENET_STD, dtype=img_t.dtype, device=img_t.device).view(3, 1, 1)
     return (img_t - mean) / std
 
 
 def pil_hflip(im: Image.Image) -> Image.Image:
-    # Pillow 新写法
     if hasattr(Image, "Transpose"):
         return im.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
-    # 兼容旧写法
     return im.transpose(Image.FLIP_LEFT_RIGHT)
 
 

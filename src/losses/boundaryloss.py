@@ -6,8 +6,6 @@ import torch.nn.functional as F
 
 
 class BoundaryLoss(nn.Module):
-    """Boundary-aware BCE loss on predicted/target edge maps."""
-
     def __init__(self, ignore_index: int = 255, kernel_size: int = 3, eps: float = 1e-6) -> None:
         super().__init__()
         self.ignore_index = int(ignore_index)

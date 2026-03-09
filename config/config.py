@@ -142,7 +142,7 @@ class TrainConfig:
 
     # ohem 分支参数：
     # OHEM 保留的困难像素比例
-    ohem_ratio: float = 0.25
+    ohem_ratio: float = 0.26
     # OHEM + Boundary 分支参数：
     # 总损失中 OHEM CE 的权重
     ohem_weight: float = 1
