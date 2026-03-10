@@ -156,3 +156,15 @@ class TrainConfig:
 @dataclass
 class MobileTrainConfig(TrainConfig):
     output_stride: int = 16 #32
+    # 蒸馏训练开关。
+    use_distillation: bool = True
+    # 教师模型 checkpoint（建议使用训练完成的 DeeplabV3+ best.pth）。
+    distill_teacher_ckpt: Path = PROJECT_ROOT / "outputs" / "teacher_best.pth"
+    # 教师模型结构参数。
+    distill_teacher_backbone_name: str = "rsnet-100"
+    distill_teacher_backbone_pretrained: bool = False
+    distill_teacher_output_stride: int = 8
+    # 蒸馏损失参数：KL(student||teacher) * T^2。
+    distill_temperature: float = 4.0
+    distill_loss_weight: float = 0.5
+    distill_aux_weight: float = 0.3

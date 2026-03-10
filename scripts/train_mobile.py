@@ -7,6 +7,7 @@ import torch
 from torch.nn.modules.batchnorm import _BatchNorm
 from torch.utils.data import DataLoader, WeightedRandomSampler
 import torch.nn as nn
+import torch.nn.functional as F
 from PIL import Image
 
 from src.commom.output_manager import OutputManager
@@ -14,6 +15,7 @@ from src.commom.repro import set_seed
 from src.datasets.cityscapes import CityscapesDataset
 from src.datasets.cityscapes_labels import CITYSCAPES_34_TO_19
 from src.eval.mIoU import compute_segmentation_metrics
+from src.models.deeplabv3_plus import DeepLabV3Plus
 from src.models.deeplabv3_plus_moblie import DeepLabV3PlusMobile
 from src.datasets.cityscapes_labels import CITYSCAPES_19_CLASS_NAMES, CITYSCAPES_19_ID2COLOR
 from src.viz.visualizer import save_predictions_triplet
@@ -158,6 +160,47 @@ def _set_optimizer_lr(optimizer: torch.optim.Optimizer, lr: float) -> None:
     for param_group in optimizer.param_groups:
         param_group["lr"] = float(lr)
 
+def _load_teacher_model(cfg: MobileTrainConfig, device: torch.device) -> nn.Module:
+    teacher_ckpt = Path(cfg.distill_teacher_ckpt)
+    if not teacher_ckpt.exists():
+        raise FileNotFoundError(
+            f"Teacher checkpoint not found: {teacher_ckpt}. Please set cfg.distill_teacher_ckpt."
+        )
+
+    teacher = DeepLabV3Plus(
+        num_classes=cfg.num_classes,
+        backbone_pretrained=cfg.distill_teacher_backbone_pretrained,
+        backbone_name=cfg.distill_teacher_backbone_name,
+        output_stride=cfg.distill_teacher_output_stride,
+        aspp_dropout=cfg.aspp_dropout,
+        decoder_dropout=cfg.decoder_dropout,
+    ).to(device)
+
+    ckpt = torch.load(teacher_ckpt, map_location=device)
+    state = ckpt["model_state"] if isinstance(ckpt, dict) and "model_state" in ckpt else ckpt
+    teacher.load_state_dict(state, strict=True)
+    teacher.eval()
+    for p in teacher.parameters():
+        p.requires_grad = False
+
+    print(f"[INFO] Distillation teacher loaded from {teacher_ckpt}")
+    return teacher
+
+
+def _compute_distill_loss(
+    student_logits: torch.Tensor,
+    teacher_logits: torch.Tensor,
+    temperature: float,
+) -> torch.Tensor:
+    t = float(temperature)
+    if t <= 0:
+        raise ValueError(f"distill_temperature must be positive, got {temperature}")
+
+    student_log_prob = F.log_softmax(student_logits / t, dim=1)
+    teacher_prob = F.softmax(teacher_logits / t, dim=1)
+    return F.kl_div(student_log_prob, teacher_prob, reduction="batchmean") * (t * t)
+
+
 def train_one_epoch(
     model,
     loader,
@@ -170,6 +213,7 @@ def train_one_epoch(
     cfg: TrainConfig,
     global_iter_start: int,
     max_iter: int,
+    teacher_model: nn.Module | None = None,
     return_loss_components: bool = False,
 ) -> dict:
     model.train()
@@ -209,7 +253,22 @@ def train_one_epoch(
                 main_loss = criterion(logits, masks)
                 aux_loss = criterion(aux_logits, masks)
                 loss_components = None
+
             loss = main_loss + float(cfg.aux_loss_weight) * aux_loss
+
+            if teacher_model is not None:
+                with torch.no_grad():
+                    teacher_logits, teacher_aux_logits = teacher_model(imgs, return_aux=True)
+                kd_main = _compute_distill_loss(logits, teacher_logits, cfg.distill_temperature)
+                kd_aux = _compute_distill_loss(aux_logits, teacher_aux_logits, cfg.distill_temperature)
+                kd_loss = kd_main + float(cfg.distill_aux_weight) * kd_aux
+                loss = loss + float(cfg.distill_loss_weight) * kd_loss
+
+                if loss_components is not None:
+                    loss_components["kd_main"] = float(kd_main.detach())
+                    loss_components["kd_aux"] = float(kd_aux.detach())
+                    loss_components["kd_total"] = float(kd_loss.detach())
+
             if loss_components is not None:
                 loss_components["total"] = float(loss.detach())
 
@@ -409,6 +468,15 @@ def main() -> None:
     print("ratio:", ratio)
     model = model.to(device)
 
+    teacher_model = None
+    if bool(cfg.use_distillation):
+        teacher_model = _load_teacher_model(cfg, device)
+        print(
+            "[INFO] Distillation enabled "
+            f"(T={cfg.distill_temperature:.2f}, loss_w={cfg.distill_loss_weight:.3f}, "
+            f"aux_w={cfg.distill_aux_weight:.3f})"
+        )
+
     loss_mode = str(cfg.loss_mode).lower()
     if loss_mode == "ohem+boundary":
         loss_mode = "ohem_boundary"
@@ -489,6 +557,7 @@ def main() -> None:
             cfg=cfg,
             global_iter_start=global_iter_start,
             max_iter=max_iter,
+            teacher_model=teacher_model,
             return_loss_components=(loss_mode != "baseline"),
         )
         train_loss = float(train_stats["loss"])
