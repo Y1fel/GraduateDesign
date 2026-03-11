@@ -6,47 +6,51 @@ import numpy as np
 import torch
 import time
 from PIL import Image
-from numpy.ma.extras import average
 from torch.utils.data import DataLoader
 
 from config.config import TrainConfig, MobileTrainConfig
 from src.datasets.cityscapes import CityscapesDataset
 from src.datasets.cityscapes_labels import CITYSCAPES_19_ID2COLOR
 from src.models.deeplabv3_plus import DeepLabV3Plus
-from src.eval.mIoU import compute_segmentation_metrics
+from src.models.deeplabv3_plus_moblie import DeepLabV3PlusMobile
 
 SAVE_COLOR = True
 OUT_DIR_NAME = "test_predictions"
+MODEL_TYPE = "student"  # 可改为 "teacher" 或 "student"
+CKPT_PATH: Path | None = None  # 可改为 Path("/your/ckpt.pth")
 
 
 def _find_best_ckpt(cfg: TrainConfig) -> Path:
     direct_best = cfg.outputs_root / "best.pth"
     return direct_best
 
-def _build_model(cfg: TrainConfig, ckpt_path: Path, device: torch.device) -> DeepLabV3Plus:
-    model = DeepLabV3Plus(
-        num_classes=cfg.num_classes,
-        backbone_pretrained=False,
-        backbone_name=cfg.backbone_name,
-        output_stride=cfg.output_stride,
-        aspp_dropout=cfg.aspp_dropout,
-        decoder_dropout=cfg.decoder_dropout,
-    ).to(device)
 
-    model_mobile = DeepLabV3Plus(
-        num_classes=cfg.num_classes,
-        backbone_pretrained=False,
-        backbone_name=cfg.backbone_name,
-        output_stride=cfg.output_stride,
-        aspp_dropout=cfg.aspp_dropout,
-        decoder_dropout=cfg.decoder_dropout,
-    )
+def _build_model(cfg: TrainConfig, ckpt_path: Path, device: torch.device, model_type: str) -> torch.nn.Module:
+    if model_type == "teacher":
+        model = DeepLabV3Plus(
+            num_classes=cfg.num_classes,
+            backbone_pretrained=False,
+            backbone_name=cfg.backbone_name,
+            output_stride=cfg.output_stride,
+            aspp_dropout=cfg.aspp_dropout,
+            decoder_dropout=cfg.decoder_dropout,
+        )
+    elif model_type == "student":
+        model = DeepLabV3PlusMobile(
+            num_classes=cfg.num_classes,
+            output_stride=cfg.output_stride,
+            aspp_dropout=cfg.aspp_dropout,
+            decoder_dropout=cfg.decoder_dropout,
+        )
+    else:
+        raise ValueError(f"Unsupported MODEL_TYPE: {model_type}. Use 'teacher' or 'student'.")
 
     ckpt = torch.load(ckpt_path, map_location="cpu")
     state = ckpt["model_state"] if isinstance(ckpt, dict) and "model_state" in ckpt else ckpt
-    model_mobile.load_state_dict(state, strict=True)
-    model_mobile.eval()
-    return model_mobile
+    model.load_state_dict(state, strict=True)
+    model = model.to(device)
+    model.eval()
+    return model
 
 
 def _save_train_id_mask(pred: np.ndarray, save_path: Path) -> None:
@@ -74,13 +78,12 @@ def _build_save_paths(out_dir: Path, rel_name: str) -> tuple[Path, Path]:
 
 @torch.inference_mode()
 def main() -> None:
-    #Config
-    # cfg = TrainConfig()
-    cfg = MobileTrainConfig()
+    model_type = MODEL_TYPE.lower().strip()
+    cfg = TrainConfig() if model_type == "teacher" else MobileTrainConfig()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    total_time=0
-    ckpt_path = _find_best_ckpt(cfg)
-    out_dir = cfg.outputs_root / OUT_DIR_NAME
+    total_time = 0.0
+    ckpt_path = CKPT_PATH if CKPT_PATH is not None else _find_best_ckpt(cfg)
+    out_dir = cfg.outputs_root / OUT_DIR_NAME / model_type
 
     test_ds = CityscapesDataset(
         root=cfg.data_root,
@@ -91,7 +94,7 @@ def main() -> None:
     )
     test_loader = DataLoader(
         test_ds,
-        batch_size=12,#cfg.batch_size,
+        batch_size=12,
         shuffle=False,
         num_workers=cfg.num_workers,
         pin_memory=(device.type == "cuda"),
@@ -99,7 +102,7 @@ def main() -> None:
         prefetch_factor=(cfg.prefetch_factor if cfg.num_workers > 0 else None),
     )
 
-    model = _build_model(cfg=cfg, ckpt_path=ckpt_path, device=device)
+    model = _build_model(cfg=cfg, ckpt_path=ckpt_path, device=device, model_type=model_type)
 
     out_dir.mkdir(parents=True, exist_ok=True)
     total = len(test_ds)
@@ -107,6 +110,7 @@ def main() -> None:
 
     print("[INFO] Begin")
     print(f"[INFO] data_root={cfg.data_root}")
+    print(f"[INFO] model_type={model_type}")
     print(f"[INFO] total_samples={total}, batch_size={cfg.batch_size}, device={device}")
     print(f"[INFO] ckpt={ckpt_path}")
     print(f"[INFO] output_dir={out_dir}")
@@ -143,6 +147,7 @@ def main() -> None:
     print(f"[METRIC] infer_total_time={total_time:.4f}s")
     print(f"[METRIC] infer_avg_time_per_image={average_ms:.3f}ms")
     print(f"[METRIC] FPS={fps:.2f}")
+
 
 if __name__ == "__main__":
     main()
