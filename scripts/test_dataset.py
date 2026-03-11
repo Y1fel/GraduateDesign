@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
 
 import numpy as np
@@ -24,7 +25,6 @@ def _find_best_ckpt(cfg: TrainConfig) -> Path:
     direct_best = cfg.outputs_root / "best.pth"
     return direct_best
 
-
 def _build_model(cfg: TrainConfig, ckpt_path: Path, device: torch.device, model_type: str) -> torch.nn.Module:
     if model_type == "teacher":
         model = DeepLabV3Plus(
@@ -35,15 +35,13 @@ def _build_model(cfg: TrainConfig, ckpt_path: Path, device: torch.device, model_
             aspp_dropout=cfg.aspp_dropout,
             decoder_dropout=cfg.decoder_dropout,
         )
-    elif model_type == "student":
+    else:
         model = DeepLabV3PlusMobile(
             num_classes=cfg.num_classes,
             output_stride=cfg.output_stride,
             aspp_dropout=cfg.aspp_dropout,
             decoder_dropout=cfg.decoder_dropout,
         )
-    else:
-        raise ValueError(f"Unsupported MODEL_TYPE: {model_type}. Use 'teacher' or 'student'.")
 
     ckpt = torch.load(ckpt_path, map_location="cpu")
     state = ckpt["model_state"] if isinstance(ckpt, dict) and "model_state" in ckpt else ckpt
@@ -51,6 +49,23 @@ def _build_model(cfg: TrainConfig, ckpt_path: Path, device: torch.device, model_
     model = model.to(device)
     model.eval()
     return model
+
+
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Test dataset prediction export")
+    parser.add_argument(
+        "--model-type",
+        choices=["teacher", "student"],
+        default="student",
+        help="选择推理模型：teacher(DeepLabV3+) 或 student(DeepLabV3PlusMobile)",
+    )
+    parser.add_argument(
+        "--ckpt",
+        type=Path,
+        default=None,
+        help="可选 checkpoint 路径；不传则使用对应配置默认 outputs_root/best.pth",
+    )
+    return parser.parse_args()
 
 
 def _save_train_id_mask(pred: np.ndarray, save_path: Path) -> None:
@@ -78,12 +93,12 @@ def _build_save_paths(out_dir: Path, rel_name: str) -> tuple[Path, Path]:
 
 @torch.inference_mode()
 def main() -> None:
-    model_type = MODEL_TYPE.lower().strip()
-    cfg = TrainConfig() if model_type == "teacher" else MobileTrainConfig()
+    args = _parse_args()
+    cfg = TrainConfig() if args.model_type == "teacher" else MobileTrainConfig()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    total_time = 0.0
-    ckpt_path = CKPT_PATH if CKPT_PATH is not None else _find_best_ckpt(cfg)
-    out_dir = cfg.outputs_root / OUT_DIR_NAME / model_type
+    total_time=0
+    ckpt_path = args.ckpt if args.ckpt is not None else _find_best_ckpt(cfg)
+    out_dir = cfg.outputs_root / OUT_DIR_NAME / args.model_type
 
     test_ds = CityscapesDataset(
         root=cfg.data_root,
@@ -102,7 +117,7 @@ def main() -> None:
         prefetch_factor=(cfg.prefetch_factor if cfg.num_workers > 0 else None),
     )
 
-    model = _build_model(cfg=cfg, ckpt_path=ckpt_path, device=device, model_type=model_type)
+    model = _build_model(cfg=cfg, ckpt_path=ckpt_path, device=device, model_type=args.model_type)
 
     out_dir.mkdir(parents=True, exist_ok=True)
     total = len(test_ds)
@@ -110,7 +125,7 @@ def main() -> None:
 
     print("[INFO] Begin")
     print(f"[INFO] data_root={cfg.data_root}")
-    print(f"[INFO] model_type={model_type}")
+    print(f"[INFO] model_type={args.model_type}")
     print(f"[INFO] total_samples={total}, batch_size={cfg.batch_size}, device={device}")
     print(f"[INFO] ckpt={ckpt_path}")
     print(f"[INFO] output_dir={out_dir}")
