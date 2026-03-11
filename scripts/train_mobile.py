@@ -167,23 +167,53 @@ def _load_teacher_model(cfg: MobileTrainConfig, device: torch.device) -> nn.Modu
             f"Teacher checkpoint not found: {teacher_ckpt}. Please set cfg.distill_teacher_ckpt."
         )
 
-    teacher = DeepLabV3Plus(
-        num_classes=cfg.num_classes,
-        backbone_pretrained=cfg.distill_teacher_backbone_pretrained,
-        backbone_name=cfg.distill_teacher_backbone_name,
-        output_stride=cfg.distill_teacher_output_stride,
-        aspp_dropout=cfg.aspp_dropout,
-        decoder_dropout=cfg.decoder_dropout,
-    ).to(device)
-
     ckpt = torch.load(teacher_ckpt, map_location=device)
     state = ckpt["model_state"] if isinstance(ckpt, dict) and "model_state" in ckpt else ckpt
-    teacher.load_state_dict(state, strict=True)
+
+    arch_cfg = str(getattr(cfg, "distill_teacher_arch", "auto")).lower()
+    if arch_cfg not in {"auto", "resnet", "mobile"}:
+        raise ValueError(
+            f"Unsupported distill_teacher_arch={cfg.distill_teacher_arch}. "
+            f"Use one of: auto/resnet/mobile."
+        )
+
+    # 自动判断：MobileNetV2 主干的 key 一般包含 backbone.features.*
+    arch = arch_cfg
+    if arch == "auto":
+        arch = "mobile" if any(k.startswith("backbone.features.") for k in state.keys()) else "resnet"
+
+    if arch == "mobile":
+        teacher = DeepLabV3PlusMobile(
+            num_classes=cfg.num_classes,
+            output_stride=cfg.distill_teacher_output_stride,
+            aspp_dropout=cfg.aspp_dropout,
+            decoder_dropout=cfg.decoder_dropout,
+        ).to(device)
+    else:
+        teacher = DeepLabV3Plus(
+            num_classes=cfg.num_classes,
+            backbone_pretrained=cfg.distill_teacher_backbone_pretrained,
+            backbone_name=cfg.distill_teacher_backbone_name,
+            output_stride=cfg.distill_teacher_output_stride,
+            aspp_dropout=cfg.aspp_dropout,
+            decoder_dropout=cfg.decoder_dropout,
+        ).to(device)
+
+    try:
+        teacher.load_state_dict(state, strict=True)
+    except RuntimeError as e:
+        raise RuntimeError(
+            "Failed to load teacher checkpoint. "
+            f"auto-detected arch='{arch}' from distill_teacher_arch='{arch_cfg}'. "
+            "Please check whether cfg.distill_teacher_ckpt matches the teacher architecture and output_stride.\n"
+            f"Original error:\n{e}"
+        ) from e
+
     teacher.eval()
     for p in teacher.parameters():
         p.requires_grad = False
 
-    print(f"[INFO] Distillation teacher loaded from {teacher_ckpt}")
+    print(f"[INFO] Distillation teacher loaded from {teacher_ckpt} (arch={arch})")
     return teacher
 
 
