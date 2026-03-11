@@ -9,7 +9,7 @@ from PIL import Image
 from numpy.ma.extras import average
 from torch.utils.data import DataLoader
 
-from config.config import TrainConfig
+from config.config import TrainConfig, MobileTrainConfig
 from src.datasets.cityscapes import CityscapesDataset
 from src.datasets.cityscapes_labels import CITYSCAPES_19_ID2COLOR
 from src.models.deeplabv3_plus import DeepLabV3Plus
@@ -33,11 +33,20 @@ def _build_model(cfg: TrainConfig, ckpt_path: Path, device: torch.device) -> Dee
         decoder_dropout=cfg.decoder_dropout,
     ).to(device)
 
+    model_mobile = DeepLabV3Plus(
+        num_classes=cfg.num_classes,
+        backbone_pretrained=False,
+        backbone_name=cfg.backbone_name,
+        output_stride=cfg.output_stride,
+        aspp_dropout=cfg.aspp_dropout,
+        decoder_dropout=cfg.decoder_dropout,
+    )
+
     ckpt = torch.load(ckpt_path, map_location="cpu")
     state = ckpt["model_state"] if isinstance(ckpt, dict) and "model_state" in ckpt else ckpt
-    model.load_state_dict(state, strict=True)
-    model.eval()
-    return model
+    model_mobile.load_state_dict(state, strict=True)
+    model_mobile.eval()
+    return model_mobile
 
 
 def _save_train_id_mask(pred: np.ndarray, save_path: Path) -> None:
@@ -65,7 +74,9 @@ def _build_save_paths(out_dir: Path, rel_name: str) -> tuple[Path, Path]:
 
 @torch.inference_mode()
 def main() -> None:
-    cfg = TrainConfig()
+    #Config
+    # cfg = TrainConfig()
+    cfg = MobileTrainConfig()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     total_time=0
     ckpt_path = _find_best_ckpt(cfg)

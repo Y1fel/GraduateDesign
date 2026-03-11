@@ -159,7 +159,7 @@ class MobileTrainConfig(TrainConfig):
     # 蒸馏训练开关。
     use_distillation: bool = True
     # 教师模型 checkpoint（建议使用训练完成的 DeeplabV3+ best.pth）。
-    distill_teacher_ckpt: Path = PROJECT_ROOT / "outputs" / "teacher_best.pth"
+    distill_teacher_ckpt: Path = PROJECT_ROOT / "outputs" / "best.pth"
     # 教师模型结构参数。
     distill_teacher_backbone_name: str = "rsnet-100"
     distill_teacher_backbone_pretrained: bool = False
