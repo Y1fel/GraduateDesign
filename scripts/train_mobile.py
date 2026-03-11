@@ -187,7 +187,7 @@ def _load_teacher_model(cfg: MobileTrainConfig, device: torch.device) -> nn.Modu
     return teacher
 
 
-def _compute_distill_loss(
+def _compute_kl_distill_loss(
     student_logits: torch.Tensor,
     teacher_logits: torch.Tensor,
     temperature: float,
@@ -199,6 +199,53 @@ def _compute_distill_loss(
     student_log_prob = F.log_softmax(student_logits / t, dim=1)
     teacher_prob = F.softmax(teacher_logits / t, dim=1)
     return F.kl_div(student_log_prob, teacher_prob, reduction="batchmean") * (t * t)
+
+
+def _compute_cwd_distill_loss(
+    student_logits: torch.Tensor,
+    teacher_logits: torch.Tensor,
+    temperature: float,
+) -> torch.Tensor:
+    """Channel-wise distillation.
+
+    For each class channel, normalize spatial responses with softmax over HxW,
+    then compute KL divergence between teacher and student distributions.
+    """
+    t = float(temperature)
+    if t <= 0:
+        raise ValueError(f"distill_temperature must be positive, got {temperature}")
+
+    n, c, h, w = student_logits.shape
+    if teacher_logits.shape != student_logits.shape:
+        teacher_logits = F.interpolate(
+            teacher_logits,
+            size=(h, w),
+            mode="bilinear",
+            align_corners=False,
+        )
+
+    s = student_logits.reshape(n, c, -1)
+    te = teacher_logits.reshape(n, c, -1)
+
+    student_log_prob = F.log_softmax(s / t, dim=-1)
+    teacher_prob = F.softmax(te / t, dim=-1)
+
+    loss = F.kl_div(student_log_prob, teacher_prob, reduction="none").sum(dim=-1)
+    return loss.mean() * (t * t)
+
+
+def _compute_distill_loss(
+    student_logits: torch.Tensor,
+    teacher_logits: torch.Tensor,
+    temperature: float,
+    distill_type: str,
+) -> torch.Tensor:
+    mode = str(distill_type).lower()
+    if mode == "cwd":
+        return _compute_cwd_distill_loss(student_logits, teacher_logits, temperature)
+    if mode == "kl":
+        return _compute_kl_distill_loss(student_logits, teacher_logits, temperature)
+    raise ValueError(f"Unsupported distill_type: {distill_type}. Use 'cwd' or 'kl'.")
 
 
 def train_one_epoch(
@@ -259,8 +306,8 @@ def train_one_epoch(
             if teacher_model is not None:
                 with torch.no_grad():
                     teacher_logits, teacher_aux_logits = teacher_model(imgs, return_aux=True)
-                kd_main = _compute_distill_loss(logits, teacher_logits, cfg.distill_temperature)
-                kd_aux = _compute_distill_loss(aux_logits, teacher_aux_logits, cfg.distill_temperature)
+                kd_main = _compute_distill_loss(logits, teacher_logits, cfg.distill_temperature, cfg.distill_type)
+                kd_aux = _compute_distill_loss(aux_logits, teacher_aux_logits, cfg.distill_temperature, cfg.distill_type)
                 kd_loss = kd_main + float(cfg.distill_aux_weight) * kd_aux
                 loss = loss + float(cfg.distill_loss_weight) * kd_loss
 
@@ -473,7 +520,7 @@ def main() -> None:
         teacher_model = _load_teacher_model(cfg, device)
         print(
             "[INFO] Distillation enabled "
-            f"(T={cfg.distill_temperature:.2f}, loss_w={cfg.distill_loss_weight:.3f}, "
+            f"(type={cfg.distill_type}, T={cfg.distill_temperature:.2f}, loss_w={cfg.distill_loss_weight:.3f}, "
             f"aux_w={cfg.distill_aux_weight:.3f})"
         )
 

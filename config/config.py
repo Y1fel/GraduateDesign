@@ -164,7 +164,11 @@ class MobileTrainConfig(TrainConfig):
     distill_teacher_backbone_name: str = "rsnet-100"
     distill_teacher_backbone_pretrained: bool = False
     distill_teacher_output_stride: int = 8
-    # 蒸馏损失参数：KL(student||teacher) * T^2。
+    # 蒸馏损失类型：
+    # - "cwd": Channel-wise Distillation（默认，语义分割更常用）
+    # - "kl":  传统 logits KL 蒸馏
+    distill_type: str = "cwd"
+    # 蒸馏温度参数（KL/CWD 都会使用）。
     distill_temperature: float = 4.0
     distill_loss_weight: float = 0.5
     distill_aux_weight: float = 0.3
