@@ -206,11 +206,6 @@ def _compute_cwd_distill_loss(
     teacher_logits: torch.Tensor,
     temperature: float,
 ) -> torch.Tensor:
-    """Channel-wise distillation.
-
-    For each class channel, normalize spatial responses with softmax over HxW,
-    then compute KL divergence between teacher and student distributions.
-    """
     t = float(temperature)
     if t <= 0:
         raise ValueError(f"distill_temperature must be positive, got {temperature}")

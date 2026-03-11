@@ -155,6 +155,17 @@ class TrainConfig:
 
 @dataclass
 class MobileTrainConfig(TrainConfig):
+    epochs: int = 90
+
+    color_jitter_prob: float = 0.5
+    color_jitter_brightness: float = 0.2
+    color_jitter_contrast: float = 0.2
+    color_jitter_saturation: float = 0.2
+    gaussian_blur_prob: float = 0.2
+    gaussian_blur_radius_min: float = 0.1
+    gaussian_blur_radius_max: float = 1.3
+
+    class_weight_boost_factor: float = 1.1
     output_stride: int = 16 #32
     # 蒸馏训练开关。
     use_distillation: bool = True
@@ -170,5 +181,5 @@ class MobileTrainConfig(TrainConfig):
     distill_type: str = "cwd"
     # 蒸馏温度参数（KL/CWD 都会使用）。
     distill_temperature: float = 4.0
-    distill_loss_weight: float = 0.5
-    distill_aux_weight: float = 0.3
+    distill_loss_weight: float = 0.7
+    distill_aux_weight: float = 0.4
