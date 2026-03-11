@@ -7,7 +7,6 @@ import numpy as np
 import torch
 import time
 from PIL import Image
-from numpy.ma.extras import average
 from torch.utils.data import DataLoader
 
 from config.config import TrainConfig, MobileTrainConfig
@@ -18,6 +17,8 @@ from src.models.deeplabv3_plus_moblie import DeepLabV3PlusMobile
 
 SAVE_COLOR = True
 OUT_DIR_NAME = "test_predictions"
+MODEL_TYPE = "student"  # 可改为 "teacher" 或 "student"
+CKPT_PATH: Path | None = None  # 可改为 Path("/your/ckpt.pth")
 
 
 def _find_best_ckpt(cfg: TrainConfig) -> Path:
@@ -108,7 +109,7 @@ def main() -> None:
     )
     test_loader = DataLoader(
         test_ds,
-        batch_size=12,#cfg.batch_size,
+        batch_size=12,
         shuffle=False,
         num_workers=cfg.num_workers,
         pin_memory=(device.type == "cuda"),
@@ -161,6 +162,7 @@ def main() -> None:
     print(f"[METRIC] infer_total_time={total_time:.4f}s")
     print(f"[METRIC] infer_avg_time_per_image={average_ms:.3f}ms")
     print(f"[METRIC] FPS={fps:.2f}")
+
 
 if __name__ == "__main__":
     main()
