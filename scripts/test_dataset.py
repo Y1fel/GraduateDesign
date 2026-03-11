@@ -25,7 +25,34 @@ def _find_best_ckpt(cfg: TrainConfig) -> Path:
     direct_best = cfg.outputs_root / "best.pth"
     return direct_best
 
+def _infer_model_type_from_state(state: dict[str, torch.Tensor]) -> str:
+    keys = state.keys()
+    # MobileNetV2 checkpoint 典型字段: backbone.features.*
+    if any(k.startswith("backbone.features.") for k in keys):
+        return "student"
+    # ResNet checkpoint 典型字段: backbone.layer1/2/3/4.*
+    if any(k.startswith("backbone.layer1.") for k in keys):
+        return "teacher"
+    raise ValueError(
+        "无法从 checkpoint 自动识别模型类型，请检查 ckpt 是否为 DeepLabV3+ / DeepLabV3PlusMobile。"
+    )
+
+
 def _build_model(cfg: TrainConfig, ckpt_path: Path, device: torch.device, model_type: str) -> torch.nn.Module:
+    ckpt = torch.load(ckpt_path, map_location="cpu")
+    state = ckpt["model_state"] if isinstance(ckpt, dict) and "model_state" in ckpt else ckpt
+
+    if not isinstance(state, dict):
+        raise TypeError(f"Invalid checkpoint format: expected dict-like state_dict, got {type(state)}")
+
+    inferred_model_type = _infer_model_type_from_state(state)
+    if inferred_model_type != model_type:
+        print(
+            f"[WARN] --model-type={model_type} 与 checkpoint 不匹配，"
+            f"自动切换为 {inferred_model_type}"
+        )
+        model_type = inferred_model_type
+
     if model_type == "teacher":
         model = DeepLabV3Plus(
             num_classes=cfg.num_classes,
@@ -36,15 +63,14 @@ def _build_model(cfg: TrainConfig, ckpt_path: Path, device: torch.device, model_
             decoder_dropout=cfg.decoder_dropout,
         )
     else:
+        mobile_output_stride = cfg.output_stride if cfg.output_stride in (16, 32) else 16
         model = DeepLabV3PlusMobile(
             num_classes=cfg.num_classes,
-            output_stride=cfg.output_stride,
+            output_stride=mobile_output_stride,
             aspp_dropout=cfg.aspp_dropout,
             decoder_dropout=cfg.decoder_dropout,
         )
 
-    ckpt = torch.load(ckpt_path, map_location="cpu")
-    state = ckpt["model_state"] if isinstance(ckpt, dict) and "model_state" in ckpt else ckpt
     model.load_state_dict(state, strict=True)
     model = model.to(device)
     model.eval()
