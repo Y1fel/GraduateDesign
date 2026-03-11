@@ -177,35 +177,43 @@ def _load_teacher_model(cfg: MobileTrainConfig, device: torch.device) -> nn.Modu
             f"Use one of: auto/resnet/mobile."
         )
 
-    # 自动判断：MobileNetV2 主干的 key 一般包含 backbone.features.*
-    arch = arch_cfg
-    if arch == "auto":
-        arch = "mobile" if any(k.startswith("backbone.features.") for k in state.keys()) else "resnet"
+    teacher_output_stride = int(cfg.distill_teacher_output_stride)
 
-    if arch == "mobile":
-        teacher = DeepLabV3PlusMobile(
-            num_classes=cfg.num_classes,
-            output_stride=cfg.distill_teacher_output_stride,
-            aspp_dropout=cfg.aspp_dropout,
-            decoder_dropout=cfg.decoder_dropout,
-        ).to(device)
+    # 硬性约束：蒸馏仅支持 teacher stride=8（ResNet）-> student stride=16（Mobile）
+    if teacher_output_stride != 8:
+        raise ValueError(
+            f"distill_teacher_output_stride must be 8 for this training pipeline, got {teacher_output_stride}."
+        )
+
+    # 自动判断：MobileNetV2 主干的 key 一般包含 backbone.features.*
+    if arch_cfg == "auto":
+        arch = "mobile" if any(k.startswith("backbone.features.") for k in state.keys()) else "resnet"
     else:
-        teacher = DeepLabV3Plus(
-            num_classes=cfg.num_classes,
-            backbone_pretrained=cfg.distill_teacher_backbone_pretrained,
-            backbone_name=cfg.distill_teacher_backbone_name,
-            output_stride=cfg.distill_teacher_output_stride,
-            aspp_dropout=cfg.aspp_dropout,
-            decoder_dropout=cfg.decoder_dropout,
-        ).to(device)
+        arch = arch_cfg
+
+    if arch != "resnet":
+        raise ValueError(
+            "Teacher must be ResNet architecture for fixed distillation setting "
+            "(teacher stride=8, student stride=16). "
+            f"Got distill_teacher_arch='{arch}'."
+        )
+
+    teacher = DeepLabV3Plus(
+        num_classes=cfg.num_classes,
+        backbone_pretrained=cfg.distill_teacher_backbone_pretrained,
+        backbone_name=cfg.distill_teacher_backbone_name,
+        output_stride=teacher_output_stride,
+        aspp_dropout=cfg.aspp_dropout,
+        decoder_dropout=cfg.decoder_dropout,
+    ).to(device)
 
     try:
         teacher.load_state_dict(state, strict=True)
     except RuntimeError as e:
         raise RuntimeError(
-            "Failed to load teacher checkpoint. "
-            f"auto-detected arch='{arch}' from distill_teacher_arch='{arch_cfg}'. "
-            "Please check whether cfg.distill_teacher_ckpt matches the teacher architecture and output_stride.\n"
+            "Failed to load teacher checkpoint as ResNet-DeepLabV3+. "
+            f"distill_teacher_arch='{arch_cfg}', resolved_arch='{arch}', "
+            f"distill_teacher_output_stride={teacher_output_stride}.\n"
             f"Original error:\n{e}"
         ) from e
 
@@ -529,6 +537,17 @@ def main() -> None:
         prefetch_factor=(cfg.prefetch_factor if cfg.num_workers > 0 else None),
         drop_last=False,
     )
+
+    if bool(cfg.use_distillation):
+        if int(cfg.output_stride) != 16:
+            raise ValueError(
+                f"output_stride must be 16 for student model in distillation mode, got {cfg.output_stride}."
+            )
+        if int(cfg.distill_teacher_output_stride) != 8:
+            raise ValueError(
+                "distill_teacher_output_stride must be 8 in distillation mode for fixed teacher/student setup, "
+                f"got {cfg.distill_teacher_output_stride}."
+            )
 
     model = DeepLabV3PlusMobile(
         num_classes=cfg.num_classes,
