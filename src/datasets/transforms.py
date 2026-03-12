@@ -89,6 +89,6 @@ def maybe_gaussian_blur(
 
 
 def pil_to_tensor(img: Image.Image) -> torch.Tensor:
-    arr = np.array(img, dtype=np.uint8)  # (H,W,3)
+    arr = np.array(img, dtype=np.uint8)           
     t = torch.from_numpy(arr.transpose(2, 0, 1)).float() / 255.0
     return t

@@ -27,7 +27,7 @@ class DeepLabV3Plus(nn.Module):
             backbone_name=backbone_name,
         )
 
-        # Common atrous rates: OS=16 -> (6,12,18), OS=8 -> (12,24,36)
+                                                                     
         if output_stride == 16:
             rates = (6, 12, 18)
         elif output_stride == 8:

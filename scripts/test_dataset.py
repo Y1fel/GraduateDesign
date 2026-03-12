@@ -1,56 +1,48 @@
 from __future__ import annotations
 
 import argparse
+import time
 from pathlib import Path
 
 import numpy as np
 import torch
-import time
 from PIL import Image
 from torch.utils.data import DataLoader
 
-from config.config import TrainConfig, MobileTrainConfig
+from config.config import MobileTrainConfig, TrainConfig
+from src.commom.constants import IMAGENET_MEAN, IMAGENET_STD
 from src.datasets.cityscapes import CityscapesDataset
 from src.datasets.cityscapes_labels import CITYSCAPES_19_ID2COLOR
 from src.models.deeplabv3_plus import DeepLabV3Plus
 from src.models.deeplabv3_plus_moblie import DeepLabV3PlusMobile
 
 SAVE_COLOR = True
+SAVE_COMPARE = True
 OUT_DIR_NAME = "test_predictions"
-MODEL_TYPE = "student"  # 可改为 "teacher" 或 "student"
-CKPT_PATH: Path | None = None  # 可改为 Path("/your/ckpt.pth")
 
 
 def _find_best_ckpt(cfg: TrainConfig) -> Path:
-    direct_best = cfg.outputs_root / "best.pth"
-    return direct_best
+    return cfg.outputs_root / "best.pth"
+
 
 def _infer_model_type_from_state(state: dict[str, torch.Tensor]) -> str:
     keys = state.keys()
-    # MobileNetV2 checkpoint 典型字段: backbone.features.*
     if any(k.startswith("backbone.features.") for k in keys):
         return "student"
-    # ResNet checkpoint 典型字段: backbone.layer1/2/3/4.*
     if any(k.startswith("backbone.layer1.") for k in keys):
         return "teacher"
-    raise ValueError(
-        "无法从 checkpoint 自动识别模型类型，请检查 ckpt 是否为 DeepLabV3+ / DeepLabV3PlusMobile。"
-    )
+    raise ValueError("无法从 checkpoint 自动识别模型类型，请检查 ckpt 是否为 DeepLabV3+ / DeepLabV3PlusMobile。")
 
 
 def _build_model(cfg: TrainConfig, ckpt_path: Path, device: torch.device, model_type: str) -> torch.nn.Module:
     ckpt = torch.load(ckpt_path, map_location="cpu")
     state = ckpt["model_state"] if isinstance(ckpt, dict) and "model_state" in ckpt else ckpt
-
     if not isinstance(state, dict):
         raise TypeError(f"Invalid checkpoint format: expected dict-like state_dict, got {type(state)}")
 
     inferred_model_type = _infer_model_type_from_state(state)
     if inferred_model_type != model_type:
-        print(
-            f"[WARN] --model-type={model_type} 与 checkpoint 不匹配，"
-            f"自动切换为 {inferred_model_type}"
-        )
+        print(f"[WARN] --model-type={model_type} 与 checkpoint 不匹配，自动切换为 {inferred_model_type}")
         model_type = inferred_model_type
 
     if model_type == "teacher":
@@ -94,27 +86,46 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _colorize_pred(pred: np.ndarray) -> np.ndarray:
+    color = np.zeros((pred.shape[0], pred.shape[1], 3), dtype=np.uint8)
+    for class_id, rgb in enumerate(CITYSCAPES_19_ID2COLOR):
+        color[pred == class_id] = rgb
+    return color
+
+
 def _save_train_id_mask(pred: np.ndarray, save_path: Path) -> None:
     save_path.parent.mkdir(parents=True, exist_ok=True)
     Image.fromarray(pred.astype(np.uint8), mode="L").save(save_path)
 
 
-def _save_color_mask(pred: np.ndarray, save_path: Path) -> None:
-    color = np.zeros((pred.shape[0], pred.shape[1], 3), dtype=np.uint8)
-    for class_id, rgb in enumerate(CITYSCAPES_19_ID2COLOR):
-        color[pred == class_id] = rgb
+def _save_color_mask(color: np.ndarray, save_path: Path) -> None:
     save_path.parent.mkdir(parents=True, exist_ok=True)
     Image.fromarray(color, mode="RGB").save(save_path)
 
 
-def _build_save_paths(out_dir: Path, rel_name: str) -> tuple[Path, Path]:
+def _to_uint8_image(img_tensor: torch.Tensor) -> np.ndarray:
+    mean = torch.tensor(IMAGENET_MEAN, dtype=img_tensor.dtype, device=img_tensor.device).view(3, 1, 1)
+    std = torch.tensor(IMAGENET_STD, dtype=img_tensor.dtype, device=img_tensor.device).view(3, 1, 1)
+    img = (img_tensor * std + mean).clamp(0, 1)
+    return (img.permute(1, 2, 0).cpu().numpy() * 255.0).astype(np.uint8)
+
+
+def _save_compare_image(img_tensor: torch.Tensor, color_mask: np.ndarray, save_path: Path) -> None:
+    original = _to_uint8_image(img_tensor)
+    merged = np.concatenate([original, color_mask], axis=1)
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    Image.fromarray(merged, mode="RGB").save(save_path)
+
+
+def _build_save_paths(out_dir: Path, rel_name: str) -> tuple[Path, Path, Path]:
     rel_path = Path(rel_name)
     city = rel_path.parent
     stem = rel_path.stem
 
     train_id_path = out_dir / "pred_trainIds" / city / f"{stem}_predTrainIds.png"
     color_path = out_dir / "pred_color" / city / f"{stem}_color.png"
-    return train_id_path, color_path
+    compare_path = out_dir / "compare" / city / f"{stem}_compare.png"
+    return train_id_path, color_path, compare_path
 
 
 @torch.inference_mode()
@@ -122,7 +133,7 @@ def main() -> None:
     args = _parse_args()
     cfg = TrainConfig() if args.model_type == "teacher" else MobileTrainConfig()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    total_time=0
+    total_time = 0.0
     ckpt_path = args.ckpt if args.ckpt is not None else _find_best_ckpt(cfg)
     out_dir = cfg.outputs_root / OUT_DIR_NAME / args.model_type
 
@@ -169,15 +180,16 @@ def main() -> None:
 
         if device.type == "cuda":
             torch.cuda.synchronize()
-        dt = time.perf_counter() - t0
+        total_time += time.perf_counter() - t0
 
-        total_time += dt
-
-        for pred, rel_name in zip(preds, names):
-            train_id_path, color_path = _build_save_paths(out_dir, rel_name)
+        for i, (pred, rel_name) in enumerate(zip(preds, names)):
+            train_id_path, color_path, compare_path = _build_save_paths(out_dir, rel_name)
             _save_train_id_mask(pred, train_id_path)
+            color_mask = _colorize_pred(pred)
             if SAVE_COLOR:
-                _save_color_mask(pred, color_path)
+                _save_color_mask(color_mask, color_path)
+            if SAVE_COMPARE:
+                _save_compare_image(imgs[i], color_mask, compare_path)
 
         seen += imgs.size(0)
         print(f"[INFO] progress: {seen}/{total}")

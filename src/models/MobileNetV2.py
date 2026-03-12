@@ -9,7 +9,7 @@ class MobileNetV2(nn.Module):
         super().__init__()
 
         cfg = [
-            # t, c, n, s
+                        
             [1, 16, 1, 1],
             [6, 24, 2, 2],
             [6, 32, 3, 2],
@@ -21,7 +21,7 @@ class MobileNetV2(nn.Module):
 
         layers = []
 
-        # first conv
+                    
         input_channel = 32
         layers.append(
             nn.Sequential(
@@ -31,7 +31,7 @@ class MobileNetV2(nn.Module):
             )
         )
 
-        # inverted residual blocks
+                                  
         for t, c, n, s in cfg:
             for i in range(n):
                 stride = s if i == 0 else 1
@@ -45,7 +45,7 @@ class MobileNetV2(nn.Module):
                 )
 
                 input_channel = c
-        # last conv
+                   
         layers.append(
             nn.Sequential(
                 nn.Conv2d(input_channel, 1280, 1, bias=False),

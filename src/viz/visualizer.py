@@ -42,7 +42,7 @@ def save_predictions_triplet(
             if saved >= max_items:
                 return
 
-            # De-normalize image using the same ImageNet stats as normalize_img.
+                                                                                
             img = imgs_cpu[i]
             mean = torch.tensor(IMAGENET_MEAN, dtype=img.dtype, device=img.device).view(3, 1, 1)
             std = torch.tensor(IMAGENET_STD, dtype=img.dtype, device=img.device).view(3, 1, 1)

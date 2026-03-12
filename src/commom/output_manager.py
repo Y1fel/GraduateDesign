@@ -23,6 +23,13 @@ class OutputManager:
         self.config_json = self.run_dir / "config.json"
         self.loss_components_csv = self.log_dir / "loss_components.csv"
 
+    @staticmethod
+    def _init_csv(path: Path, header: list[str]) -> None:
+        if path.exists():
+            return
+        with path.open("w", newline="", encoding="utf-8") as f:
+            csv.writer(f).writerow(header)
+
     def save_config(self, cfg: Any) -> None:
         self.config_json.write_text(
             json.dumps(asdict(cfg), indent=2, ensure_ascii=False, default=str),
@@ -30,30 +37,26 @@ class OutputManager:
         )
 
     def init_metrics(self) -> None:
-        if self.metrics_csv.exists():
-            pass
-        else:
-            with self.metrics_csv.open("w", newline="", encoding="utf-8") as f:
-                w = csv.writer(f)
-                w.writerow([
-                    "epoch",
-                    "train_loss",
-                    "val_loss",
-                    "val_miou",
-                    "val_bf1",
-                    "lr",
-                    "time_sec",
-                ])
-
-        if not self.per_class_metrics_csv.exists():
-            with self.per_class_metrics_csv.open("w", newline="", encoding="utf-8") as f:
-                w = csv.writer(f)
-                w.writerow(["epoch", "class_id", "class_name", "iou", "precision", "recall"])
-
-        if not self.loss_components_csv.exists():
-            with self.loss_components_csv.open("w", newline="", encoding="utf-8") as f:
-                w = csv.writer(f)
-                w.writerow(["epoch", "split", "ohem_ce", "boundary", "total"])
+        self._init_csv(
+            self.metrics_csv,
+            [
+                "epoch",
+                "train_loss",
+                "val_loss",
+                "val_miou",
+                "val_bf1",
+                "lr",
+                "time_sec",
+            ],
+        )
+        self._init_csv(
+            self.per_class_metrics_csv,
+            ["epoch", "class_id", "class_name", "iou", "precision", "recall"],
+        )
+        self._init_csv(
+            self.loss_components_csv,
+            ["epoch", "split", "ohem_ce", "boundary", "total"],
+        )
 
     def append_metrics(
         self,
@@ -98,7 +101,6 @@ class OutputManager:
                     f"{recall:.6f}",
                 ]
             )
-
 
     def append_loss_components(
         self,
