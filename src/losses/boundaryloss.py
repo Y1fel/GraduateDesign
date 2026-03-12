@@ -33,7 +33,7 @@ class BoundaryLoss(nn.Module):
         pred_boundary = self._pred_boundary_map(probs)
         target_boundary = self._target_boundary_map(tgt)
 
-        pred_boundary_logits = torch.logit(pred_boundary.clamp(self.eps, 1.0 - self.eps))#AMP->logits
+        pred_boundary_logits = torch.logit(pred_boundary.clamp(self.eps, 1.0 - self.eps))            
         loss_map = F.binary_cross_entropy_with_logits(pred_boundary_logits, target_boundary, reduction="none")
         loss_map = loss_map * valid
         denom = valid.sum().clamp_min(self.eps)

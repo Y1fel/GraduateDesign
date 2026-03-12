@@ -6,7 +6,7 @@ import numpy as np
 from PIL import Image
 
 
-RGBTuple = Tuple[int, int, int]  # (r,g,b)
+RGBTuple = Tuple[int, int, int]           
 
 def load_class_dict_csv(
     csv_path: Union[str, Path],
@@ -65,7 +65,7 @@ def color_mask_to_id(
 ) -> np.ndarray:
 
     if isinstance(mask_rgb, Image.Image):
-        arr = np.array(mask_rgb.convert("RGB"), dtype=np.uint8)  # (H,W,3)
+        arr = np.array(mask_rgb.convert("RGB"), dtype=np.uint8)           
     else:
         arr = np.asarray(mask_rgb, dtype=np.uint8)
         if arr.ndim != 3 or arr.shape[2] != 3:

@@ -16,7 +16,7 @@ class ResNetBackbone(nn.Module):
 
         if output_stride == 16:
             replace = [False, False, True]
-        else:  # output_stride == 8
+        else:                      
             replace = [False, True, True]
 
         backbone_key = str(backbone_name).lower().replace("_", "-")
@@ -27,7 +27,7 @@ class ResNetBackbone(nn.Module):
 
         builders = {
             "rsnet-50": (resnet50, ResNet50_Weights.IMAGENET1K_V2),
-            # rs-net-100 对应 torchvision 中可用且参数量接近的 ResNet-101。
+                                                              
             "rs-net-100": (resnet101, ResNet101_Weights.IMAGENET1K_V2),
         }
         if backbone_key not in builders:
@@ -38,17 +38,17 @@ class ResNetBackbone(nn.Module):
         weights = default_weights if pretrained else None
         m = builder(weights=weights, replace_stride_with_dilation=replace)
 
-        # Stem
+              
         self.conv1 = m.conv1
         self.bn1 = m.bn1
         self.relu = m.relu
         self.maxpool = m.maxpool
 
-        # Stages
-        self.layer1 = m.layer1  # stride 4
-        self.layer2 = m.layer2  # stride 8
-        self.layer3 = m.layer3  # stride 16/8
-        self.layer4 = m.layer4  # stride 16/8
+                
+        self.layer1 = m.layer1            
+        self.layer2 = m.layer2            
+        self.layer3 = m.layer3               
+        self.layer4 = m.layer4               
 
         self.out_channels = 2048
         self.low_level_channels = 256
@@ -60,10 +60,10 @@ class ResNetBackbone(nn.Module):
         x = self.maxpool(x)
 
         x1 = self.layer1(x)
-        low_level = x1  # (N, 256, H/4, W/4)
+        low_level = x1                      
 
-        x2 = self.layer2(x1)  # (N, 512, H/8, W/8)
+        x2 = self.layer2(x1)                      
         x3 = self.layer3(x2)
-        x4 = self.layer4(x3)  # (N, 2048, H/OS, W/OS)
+        x4 = self.layer4(x3)                         
 
         return low_level, x2, x4
