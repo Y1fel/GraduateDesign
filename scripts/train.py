@@ -20,7 +20,7 @@ from src.viz.visualizer import save_predictions_triplet
 from config.config import TrainConfig
 from src.losses.combined_loss import CombinedCEFocalLoss, OHEMBoundaryLoss, OHEMCELoss
 
-
+#冻结BN层
 def freeze_bn(model):
     for m in model.modules():
         if isinstance(m, _BatchNorm):
@@ -31,12 +31,12 @@ def freeze_bn(model):
                 m.bias.requires_grad = False
 
 
-def _accumulate_pred_hist(pred: torch.Tensor, hist: torch.Tensor, num_classes: int) -> None:
+def accumulate_pred_hist(pred: torch.Tensor, hist: torch.Tensor, num_classes: int) -> None:
     bins = torch.bincount(pred.view(-1), minlength=num_classes)
     hist += bins.to(hist.device, dtype=hist.dtype)
 
 
-def _compute_grad_norm(model: nn.Module) -> float:
+def compute_grad_norm(model: nn.Module) -> float:
     total = 0.0
     for p in model.parameters():
         if p.grad is not None:
@@ -45,7 +45,7 @@ def _compute_grad_norm(model: nn.Module) -> float:
     return total ** 0.5
 
 
-def _build_rare_class_sampler(train_ds: CityscapesDataset, cfg: TrainConfig) -> WeightedRandomSampler:
+def build_rare_class_sampler(train_ds: CityscapesDataset, cfg: TrainConfig) -> WeightedRandomSampler:
     rare_ids = set(int(cid) for cid in cfg.rare_class_ids)
     remap = np.asarray(CITYSCAPES_34_TO_19, dtype=np.uint8)
     weights = np.ones(len(train_ds.img_paths), dtype=np.float64)
@@ -69,7 +69,7 @@ def _build_rare_class_sampler(train_ds: CityscapesDataset, cfg: TrainConfig) -> 
     )
 
 
-def _compute_class_weights(train_ds: CityscapesDataset, cfg: TrainConfig, strategy_override: str | None = None) -> torch.Tensor:
+def compute_class_weights(train_ds: CityscapesDataset, cfg: TrainConfig, strategy_override: str | None = None) -> torch.Tensor:
     remap = np.asarray(CITYSCAPES_34_TO_19, dtype=np.uint8)
     counts = np.zeros(cfg.num_classes, dtype=np.float64)
 
@@ -100,7 +100,7 @@ def _compute_class_weights(train_ds: CityscapesDataset, cfg: TrainConfig, strate
 
 
 
-def _maybe_boost_low_iou_class_weights(
+def boost_low_iou_class_weights(
     criterion: nn.Module,
     iou_per_class: list[float],
     cfg: TrainConfig,
@@ -215,13 +215,13 @@ def train_one_epoch(
         scaler.scale(loss).backward()
         if use_amp:
             scaler.unscale_(optimizer)
-        grad_norm_sum += _compute_grad_norm(model)
+        grad_norm_sum += compute_grad_norm(model)
         grad_steps += 1
         scaler.step(optimizer)
         scaler.update()
 
         pred = torch.argmax(logits.detach(), dim=1)
-        _accumulate_pred_hist(pred, pred_hist, num_classes=num_classes)
+        accumulate_pred_hist(pred, pred_hist, num_classes=num_classes)
 
         bs = imgs.size(0)
         total_loss += loss.item() * bs
@@ -373,7 +373,7 @@ def main() -> None:
             "[INFO] Building rare-class-aware sampler "
             f"(classes={cfg.rare_class_ids}, multiplier={cfg.rare_class_weight_multiplier:.2f})"
         )
-        train_sampler = _build_rare_class_sampler(train_ds, cfg)
+        train_sampler = build_rare_class_sampler(train_ds, cfg)
         train_shuffle = False
 
     train_loader = DataLoader(
@@ -418,7 +418,7 @@ def main() -> None:
 
     class_weight_strategy = "power_inverse" if loss_mode == "baseline" else None
     class_weights = (
-        _compute_class_weights(train_ds, cfg, strategy_override=class_weight_strategy).to(device)
+        compute_class_weights(train_ds, cfg, strategy_override=class_weight_strategy).to(device)
         if cfg.use_class_weights
         else None
     )
@@ -590,7 +590,7 @@ def main() -> None:
             cfg.use_class_weights
             and (epoch % max(1, int(cfg.class_weight_boost_low_iou_every)) == 0)
         ):
-            _maybe_boost_low_iou_class_weights(criterion, list(iou_per_class), cfg)
+            boost_low_iou_class_weights(criterion, list(iou_per_class), cfg)
 
         if device.type == "cuda":
             peak = torch.cuda.max_memory_allocated() / 1024**3

@@ -1,6 +1,3 @@
-from __future__ import annotations
-
-import argparse
 import time
 from pathlib import Path
 
@@ -18,32 +15,13 @@ from src.models.deeplabv3_plus_moblie import DeepLabV3PlusMobile
 
 SAVE_COLOR = True
 SAVE_COMPARE = True
-OUT_DIR_NAME = "test_predictions"
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
-
-def _find_best_ckpt(cfg: TrainConfig) -> Path:
-    return cfg.outputs_root / "best.pth"
-
-
-def _infer_model_type_from_state(state: dict[str, torch.Tensor]) -> str:
-    keys = state.keys()
-    if any(k.startswith("backbone.features.") for k in keys):
-        return "student"
-    if any(k.startswith("backbone.layer1.") for k in keys):
-        return "teacher"
-    raise ValueError("无法从 checkpoint 自动识别模型类型，请检查 ckpt 是否为 DeepLabV3+ / DeepLabV3PlusMobile。")
-
-
-def _build_model(cfg: TrainConfig, ckpt_path: Path, device: torch.device, model_type: str) -> torch.nn.Module:
+def build_model(cfg: TrainConfig, ckpt_path: Path, device: torch.device, model_type: str) -> torch.nn.Module:
     ckpt = torch.load(ckpt_path, map_location="cpu")
     state = ckpt["model_state"] if isinstance(ckpt, dict) and "model_state" in ckpt else ckpt
     if not isinstance(state, dict):
         raise TypeError(f"Invalid checkpoint format: expected dict-like state_dict, got {type(state)}")
-
-    inferred_model_type = _infer_model_type_from_state(state)
-    if inferred_model_type != model_type:
-        print(f"[WARN] --model-type={model_type} 与 checkpoint 不匹配，自动切换为 {inferred_model_type}")
-        model_type = inferred_model_type
 
     if model_type == "teacher":
         model = DeepLabV3Plus(
@@ -68,56 +46,14 @@ def _build_model(cfg: TrainConfig, ckpt_path: Path, device: torch.device, model_
     model.eval()
     return model
 
-
-def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Test dataset prediction export")
-    parser.add_argument(
-        "--model-type",
-        choices=["teacher", "student"],
-        default="student",
-        help="选择推理模型：teacher(DeepLabV3+) 或 student(DeepLabV3PlusMobile)",
-    )
-    parser.add_argument(
-        "--ckpt",
-        type=Path,
-        default=None,
-        help="可选 checkpoint 路径；不传则使用对应配置默认 outputs_root/best.pth",
-    )
-    return parser.parse_args()
-
-
-def _colorize_pred(pred: np.ndarray) -> np.ndarray:
+def colorize_pred(pred: np.ndarray) -> np.ndarray:
     color = np.zeros((pred.shape[0], pred.shape[1], 3), dtype=np.uint8)
     for class_id, rgb in enumerate(CITYSCAPES_19_ID2COLOR):
         color[pred == class_id] = rgb
     return color
 
 
-def _save_train_id_mask(pred: np.ndarray, save_path: Path) -> None:
-    save_path.parent.mkdir(parents=True, exist_ok=True)
-    Image.fromarray(pred.astype(np.uint8), mode="L").save(save_path)
-
-
-def _save_color_mask(color: np.ndarray, save_path: Path) -> None:
-    save_path.parent.mkdir(parents=True, exist_ok=True)
-    Image.fromarray(color, mode="RGB").save(save_path)
-
-
-def _to_uint8_image(img_tensor: torch.Tensor) -> np.ndarray:
-    mean = torch.tensor(IMAGENET_MEAN, dtype=img_tensor.dtype, device=img_tensor.device).view(3, 1, 1)
-    std = torch.tensor(IMAGENET_STD, dtype=img_tensor.dtype, device=img_tensor.device).view(3, 1, 1)
-    img = (img_tensor * std + mean).clamp(0, 1)
-    return (img.permute(1, 2, 0).cpu().numpy() * 255.0).astype(np.uint8)
-
-
-def _save_compare_image(img_tensor: torch.Tensor, color_mask: np.ndarray, save_path: Path) -> None:
-    original = _to_uint8_image(img_tensor)
-    merged = np.concatenate([original, color_mask], axis=1)
-    save_path.parent.mkdir(parents=True, exist_ok=True)
-    Image.fromarray(merged, mode="RGB").save(save_path)
-
-
-def _build_save_paths(out_dir: Path, rel_name: str) -> tuple[Path, Path, Path]:
+def build_save_paths(out_dir: Path, rel_name: str) -> tuple[Path, Path, Path]:
     rel_path = Path(rel_name)
     city = rel_path.parent
     stem = rel_path.stem
@@ -128,14 +64,30 @@ def _build_save_paths(out_dir: Path, rel_name: str) -> tuple[Path, Path, Path]:
     return train_id_path, color_path, compare_path
 
 
+def denormalize_image_to_uint8(img_tensor: torch.Tensor) -> np.ndarray:
+    mean = torch.tensor(
+        IMAGENET_MEAN,
+        dtype=img_tensor.dtype,
+        device=img_tensor.device,
+    ).view(3, 1, 1)
+    std = torch.tensor(
+        IMAGENET_STD,
+        dtype=img_tensor.dtype,
+        device=img_tensor.device,
+    ).view(3, 1, 1)
+
+    img = (img_tensor * std + mean).clamp(0, 1)
+    return (img.permute(1, 2, 0).cpu().numpy() * 255.0).astype(np.uint8)
+
+
 @torch.inference_mode()
 def main() -> None:
-    args = _parse_args()
-    cfg = TrainConfig() if args.model_type == "teacher" else MobileTrainConfig()
+    model_type = "teacher"
+    cfg = TrainConfig() if model_type == "teacher" else MobileTrainConfig()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     total_time = 0.0
-    ckpt_path = args.ckpt if args.ckpt is not None else _find_best_ckpt(cfg)
-    out_dir = cfg.outputs_root / OUT_DIR_NAME / args.model_type
+    ckpt_path = PROJECT_ROOT / "outputs" / "best.pth"
+    out_dir = PROJECT_ROOT / "outputs" / "Predictions"
 
     test_ds = CityscapesDataset(
         root=cfg.data_root,
@@ -154,7 +106,7 @@ def main() -> None:
         prefetch_factor=(cfg.prefetch_factor if cfg.num_workers > 0 else None),
     )
 
-    model = _build_model(cfg=cfg, ckpt_path=ckpt_path, device=device, model_type=args.model_type)
+    model = build_model(cfg=cfg, ckpt_path=ckpt_path, device=device, model_type=model_type)
 
     out_dir.mkdir(parents=True, exist_ok=True)
     total = len(test_ds)
@@ -162,7 +114,7 @@ def main() -> None:
 
     print("[INFO] Begin")
     print(f"[INFO] data_root={cfg.data_root}")
-    print(f"[INFO] model_type={args.model_type}")
+    print(f"[INFO] model_type={model_type}")
     print(f"[INFO] total_samples={total}, batch_size={cfg.batch_size}, device={device}")
     print(f"[INFO] ckpt={ckpt_path}")
     print(f"[INFO] output_dir={out_dir}")
@@ -183,13 +135,21 @@ def main() -> None:
         total_time += time.perf_counter() - t0
 
         for i, (pred, rel_name) in enumerate(zip(preds, names)):
-            train_id_path, color_path, compare_path = _build_save_paths(out_dir, rel_name)
-            _save_train_id_mask(pred, train_id_path)
-            color_mask = _colorize_pred(pred)
+            train_id_path, color_path, compare_path = build_save_paths(out_dir, rel_name)
+
+            train_id_path.parent.mkdir(parents=True, exist_ok=True)
+            Image.fromarray(pred.astype(np.uint8), mode="L").save(train_id_path)
+
+            color_mask = colorize_pred(pred)
             if SAVE_COLOR:
-                _save_color_mask(color_mask, color_path)
+                color_path.parent.mkdir(parents=True, exist_ok=True)
+                Image.fromarray(color_mask, mode="RGB").save(color_path)
+
             if SAVE_COMPARE:
-                _save_compare_image(imgs[i], color_mask, compare_path)
+                original = denormalize_image_to_uint8(imgs[i])
+                merged = np.concatenate([original, color_mask], axis=1)
+                compare_path.parent.mkdir(parents=True, exist_ok=True)
+                Image.fromarray(merged, mode="RGB").save(compare_path)
 
         seen += imgs.size(0)
         print(f"[INFO] progress: {seen}/{total}")
