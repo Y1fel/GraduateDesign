@@ -107,21 +107,20 @@ class TrainConfig:
     gaussian_blur_radius_min: float = 0.0
     gaussian_blur_radius_max: float = 0.0
 
-    # 每 N epoch 产出一次预测可视化。
     save_vis_every: int = 20
     # 单次可视化保存样本上限。
     save_vis_max_items: int = 10
-    # 训练输出根目录（日志、ckpt、可视化）。
+    # 训练输出根目录
     outputs_root: Path = PROJECT_ROOT / "outputs"
 
-    # 全局随机种子（用于 1:1 对照实验）。
+    # 全局随机种子
     seed: int = 42
-    # 是否开启混合精度（仅 CUDA 下生效）。
+    # AMP混合精度
     use_amp: bool = True
 
     # 是否启用稀有类感知采样器（WeightedRandomSampler）。
     use_rare_class_sampler: bool = True
-    # 稀有类 ID 列表（按 19 类 id）。
+    # 稀有类ID列表
     rare_class_ids: tuple[int, ...] = (3,4,5,6,9,12,16,17)
     # 样本含稀有类时的样本权重倍率。
     rare_class_weight_multiplier: float = 2.0
@@ -130,9 +129,9 @@ class TrainConfig:
 
 
     # loss_mode:
-    # - "baseline": 保持旧版 CE + Focal 组合，用于对照实验
-    # - "ohem": 使用 OHEM CrossEntropy（仅保留困难像素）
-    # - "ohem_boundary": 使用 OHEM + Boundary Loss 组合
+    # - "baseline":CE+Focal
+    # - "ohem":OHEM
+    # - "ohem_boundary":OHEM+boundary
     loss_mode: str = "ohem"
 
     # baseline 分支参数（CE + Focal）。
@@ -169,20 +168,15 @@ class MobileTrainConfig(TrainConfig):
     output_stride: int = 16 #32
     # 蒸馏训练开关。
     use_distillation: bool = True
-    # 教师模型 checkpoint（建议使用训练完成的 DeeplabV3+ best.pth）。
+    # 教师模型 checkpoint
     distill_teacher_ckpt: Path = PROJECT_ROOT / "outputs" / "best.pth"
-    # 教师模型架
-    # - "auto": 根据 checkpoint 键名自动判断（推荐）
-    # - "resnet": 使用 DeepLabV3Plus(ResNet backbone)
-    # - "mobile": 使用 DeepLabV3PlusMobile(MobileNetV2 backbone)
     distill_teacher_arch: str = "resnet"
-    # 教师模型结构参数。
     distill_teacher_backbone_name: str = "rsnet-100"
     distill_teacher_backbone_pretrained: bool = False
     distill_teacher_output_stride: int = 8
     # 蒸馏损失类型：
-    # - "cwd": Channel-wise Distillation（默认，语义分割更常用）
-    # - "kl":  传统 logits KL 蒸馏
+    # - "cwd": Channel-wise Distillation
+    # - "kl":  logits KL蒸馏
     distill_type: str = "cwd"
     # 蒸馏温度参数（KL/CWD 都会使用）。
     distill_temperature: float = 4.0

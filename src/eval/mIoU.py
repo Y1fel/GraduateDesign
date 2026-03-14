@@ -32,7 +32,7 @@ def update_confusion_matrix(
     if pred.numel() == 0:
         return
 
-    k = (target * num_classes + pred).to(torch.int64)
+    k = (target*num_classes+pred).to(torch.int64)
     bins = torch.bincount(k, minlength=num_classes * num_classes)
     conf += bins.view(num_classes, num_classes)
 

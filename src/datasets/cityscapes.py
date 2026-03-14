@@ -8,12 +8,12 @@ from torch.utils.data import Dataset
 
 from src.datasets.cityscapes_labels import CITYSCAPES_34_TO_19
 from src.datasets.transforms import (
-    maybe_hflip_pair,
+    hflip_pair,
     pil_to_tensor,
     random_scale_pair,
     normalize_img,
-    maybe_color_jitter,
-    maybe_gaussian_blur,
+    color_jitter,
+    gaussian_blur,
 )
 
 
@@ -104,15 +104,15 @@ class CityscapesDataset(Dataset):
         if self.training:
             if self.multi_scale_range != (1.0, 1.0):
                 img, mask_id = random_scale_pair(img, mask_id, self.multi_scale_range)
-            img, mask_id = maybe_hflip_pair(img, mask_id, self.hflip_prob)
-            img = maybe_color_jitter(
+            img, mask_id = hflip_pair(img, mask_id, self.hflip_prob)
+            img = color_jitter(
                 img,
                 prob=self.color_jitter_prob,
                 brightness=self.color_jitter_brightness,
                 contrast=self.color_jitter_contrast,
                 saturation=self.color_jitter_saturation,
             )
-            img = maybe_gaussian_blur(
+            img = gaussian_blur(
                 img,
                 prob=self.gaussian_blur_prob,
                 radius_range=self.gaussian_blur_radius_range,

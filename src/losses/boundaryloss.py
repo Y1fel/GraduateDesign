@@ -12,12 +12,12 @@ class BoundaryLoss(nn.Module):
         self.kernel_size = max(1, int(kernel_size))
         self.eps = float(eps)
 
-    def _target_boundary_map(self, labels: torch.Tensor) -> torch.Tensor:
+    def target_boundary_map(self, labels: torch.Tensor) -> torch.Tensor:
         labels_f = labels.float().unsqueeze(1)
         pooled = F.max_pool2d(labels_f, kernel_size=self.kernel_size, stride=1, padding=self.kernel_size // 2)
         return (pooled != labels_f).float()
 
-    def _pred_boundary_map(self, probs: torch.Tensor) -> torch.Tensor:
+    def pred_boundary_map(self, probs: torch.Tensor) -> torch.Tensor:
         score = probs.max(dim=1, keepdim=True).values
         pooled_max = F.max_pool2d(score, kernel_size=self.kernel_size, stride=1, padding=self.kernel_size // 2)
         pooled_min = -F.max_pool2d(-score, kernel_size=self.kernel_size, stride=1, padding=self.kernel_size // 2)
@@ -30,8 +30,8 @@ class BoundaryLoss(nn.Module):
         tgt = targets.clone()
         tgt[targets == self.ignore_index] = 0
 
-        pred_boundary = self._pred_boundary_map(probs)
-        target_boundary = self._target_boundary_map(tgt)
+        pred_boundary = self.pred_boundary_map(probs)
+        target_boundary = self.target_boundary_map(tgt)
 
         pred_boundary_logits = torch.logit(pred_boundary.clamp(self.eps, 1.0 - self.eps))            
         loss_map = F.binary_cross_entropy_with_logits(pred_boundary_logits, target_boundary, reduction="none")

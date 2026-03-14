@@ -41,7 +41,7 @@ def random_scale_pair(
     return img, mask
 
 
-def maybe_hflip_pair(
+def hflip_pair(
     img: Image.Image,
     mask: Image.Image,
     prob: float,
@@ -50,8 +50,7 @@ def maybe_hflip_pair(
         return pil_hflip(img), pil_hflip(mask)
     return img, mask
 
-
-def maybe_color_jitter(
+def color_jitter(
     img: Image.Image,
     prob: float,
     brightness: float,
@@ -72,8 +71,7 @@ def maybe_color_jitter(
         img = ImageEnhance.Color(img).enhance(factor)
     return img
 
-
-def maybe_gaussian_blur(
+def gaussian_blur(
     img: Image.Image,
     prob: float,
     radius_range: Tuple[float, float],
