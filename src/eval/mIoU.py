@@ -38,7 +38,7 @@ def update_confusion_matrix(
 
 
 @torch.no_grad()
-def _boundary_map(mask: torch.Tensor, ignore_index: int) -> torch.Tensor:
+def boundary_map(mask: torch.Tensor, ignore_index: int) -> torch.Tensor:
     valid = mask != ignore_index
     t = mask.clone()
     t[~valid] = 0
@@ -56,14 +56,14 @@ def _boundary_map(mask: torch.Tensor, ignore_index: int) -> torch.Tensor:
 
 
 @torch.no_grad()
-def _boundary_fscore(
+def boundary_fscore(
     pred: torch.Tensor,
     target: torch.Tensor,
     ignore_index: int,
     dilation: int,
 ) -> tuple[float, float, float]:
-    pb = _boundary_map(pred, ignore_index)
-    tb = _boundary_map(target, ignore_index)
+    pb = boundary_map(pred, ignore_index)
+    tb = boundary_map(target, ignore_index)
 
     if dilation > 0:
         k = 2 * dilation + 1
@@ -85,14 +85,14 @@ def _boundary_fscore(
 
 
 @torch.no_grad()
-def _trimap_iou(
+def trimap_iou(
     pred: torch.Tensor,
     target: torch.Tensor,
     ignore_index: int,
     trimap_width: int,
 ) -> float:
     valid = target != ignore_index
-    tb = _boundary_map(target, ignore_index)
+    tb = boundary_map(target, ignore_index)
 
     if trimap_width > 0:
         k = 2 * trimap_width + 1
@@ -135,11 +135,11 @@ def compute_segmentation_metrics(
         pred = torch.argmax(logits, dim=1)
         update_confusion_matrix(conf, pred, masks, num_classes, ignore_index)
 
-        bf, bp, br = _boundary_fscore(pred, masks, ignore_index=ignore_index, dilation=boundary_dilation)
+        bf, bp, br = boundary_fscore(pred, masks, ignore_index=ignore_index, dilation=boundary_dilation)
         bf_scores.append(bf)
         bf_precisions.append(bp)
         bf_recalls.append(br)
-        trimap_ious.append(_trimap_iou(pred, masks, ignore_index=ignore_index, trimap_width=trimap_width))
+        trimap_ious.append(trimap_iou(pred, masks, ignore_index=ignore_index, trimap_width=trimap_width))
 
     c = conf.detach().cpu().numpy().astype(np.float64)
     tp = np.diag(c)

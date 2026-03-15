@@ -7,9 +7,7 @@ from torchvision.models.mobilenetv2 import InvertedResidual
 class MobileNetV2(nn.Module):
     def __init__(self, num_classes=1000):
         super().__init__()
-
         cfg = [
-                        
             [1, 16, 1, 1],
             [6, 24, 2, 2],
             [6, 32, 3, 2],
@@ -21,7 +19,6 @@ class MobileNetV2(nn.Module):
 
         layers = []
 
-                    
         input_channel = 32
         layers.append(
             nn.Sequential(
@@ -31,7 +28,6 @@ class MobileNetV2(nn.Module):
             )
         )
 
-                                  
         for t, c, n, s in cfg:
             for i in range(n):
                 stride = s if i == 0 else 1

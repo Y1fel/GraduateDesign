@@ -123,7 +123,7 @@ def boost_low_iou_class_weights(
             criterion.class_weights.copy_(weights.to(criterion.class_weights.device))
         print(f"[INFO] boosted class_weights={criterion.class_weights.detach().cpu().tolist()}")
 
-def _compute_lr_at_iter(global_iter: int, max_iter: int, cfg: TrainConfig) -> float:
+def compute_lr_at_iter(global_iter: int, max_iter: int, cfg: TrainConfig) -> float:
     if max_iter <= 0:
         raise ValueError(f"max_iter must be positive, got {max_iter}")
 
@@ -153,7 +153,7 @@ def _compute_lr_at_iter(global_iter: int, max_iter: int, cfg: TrainConfig) -> fl
     raise ValueError(f"Unsupported lr_policy: {cfg.lr_policy}. Use 'poly' or 'cosine'.")
 
 
-def _set_optimizer_lr(optimizer: torch.optim.Optimizer, lr: float) -> None:
+def set_optimizer_lr(optimizer: torch.optim.Optimizer, lr: float) -> None:
     for param_group in optimizer.param_groups:
         param_group["lr"] = float(lr)
 
@@ -186,8 +186,8 @@ def train_one_epoch(
 
     for _it, (imgs, masks, _names) in enumerate(loader):
         global_iter = global_iter_start + _it
-        lr_now = _compute_lr_at_iter(global_iter=global_iter, max_iter=max_iter, cfg=cfg)
-        _set_optimizer_lr(optimizer, lr_now)
+        lr_now = compute_lr_at_iter(global_iter=global_iter, max_iter=max_iter, cfg=cfg)
+        set_optimizer_lr(optimizer, lr_now)
 
         data_time_sum += time.perf_counter() - loop_t
         iter_t = time.perf_counter()
