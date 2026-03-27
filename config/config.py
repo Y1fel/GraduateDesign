@@ -70,13 +70,13 @@ class TrainConfig:
     hflip_prob: float = 0.5                   #水平翻转概率
 
 
-    color_jitter_prob: float = 0.0            #颜色抖动概率
-    color_jitter_brightness: float = 0.0      #亮度抖动幅度：[1-v, 1+v]。
-    color_jitter_contrast: float = 0.0        #对比度抖动幅度
-    color_jitter_saturation: float = 0.0      #饱和度抖动幅度
-    gaussian_blur_prob: float = 0.0           #高斯模糊概率
-    gaussian_blur_radius_min: float = 0.0
-    gaussian_blur_radius_max: float = 0.0     #高斯模糊半径
+    color_jitter_prob: float = 0.5            #颜色抖动概率
+    color_jitter_brightness: float = 0.2      #亮度抖动幅度：[1-v, 1+v]。
+    color_jitter_contrast: float = 0.2        #对比度抖动幅度
+    color_jitter_saturation: float = 0.2      #饱和度抖动幅度
+    gaussian_blur_prob: float = 0.2           #高斯模糊概率
+    gaussian_blur_radius_min: float = 0.1
+    gaussian_blur_radius_max: float = 1.3     #高斯模糊半径
 
     #训练输出和可视化
     save_vis_every: int = 20
@@ -87,7 +87,7 @@ class TrainConfig:
     # - "baseline":CE+Focal
     # - "ohem":OHEM
     # - "ohem_boundary":OHEM+boundary
-    loss_mode: str = "ohem"
+    loss_mode: str = "ohem_boundary"
 
     #CE+Focal
     ce_weight: float = 0.75
@@ -95,9 +95,9 @@ class TrainConfig:
     focal_gamma: float = 2.0
 
     #OHEM
-    ohem_ratio: float = 0.26               #OHEM保留的困难像素比例
+    ohem_ratio: float = 0.25               #OHEM保留的困难像素比例
     ohem_weight: float = 1                 #OHEM权重
-    boundary_weight: float = 0.05          #boundary_loss权重
+    boundary_weight: float = 0.15         #boundary_loss权重
     boundary_kernel_size: int = 3          #边界提取核尺寸
     report_loss_every: int = 5
 

@@ -10,9 +10,9 @@ plt.rcParams["font.sans-serif"] = ["SimHei"]
 plt.rcParams['axes.unicode_minus'] = False
 
           
-loss_df = pd.read_csv('D:\MachineLearning\GraduateDesign\outputs\cityscapes_deeplabv3plus_20260308_193910\logs\metrics.csv')          
-metrics_df = pd.read_csv('D:\MachineLearning\GraduateDesign\outputs\cityscapes_deeplabv3plus_20260308_193910\logs\metrics.csv')                 
-per_class_df = pd.read_csv('D:\MachineLearning\GraduateDesign\outputs\cityscapes_deeplabv3plus_20260308_193910\logs\per_class_metrics.csv')           
+loss_df = pd.read_csv('/outputs/mid-distilledMobile\logs\metrics.csv')
+metrics_df = pd.read_csv('/outputs/mid-distilledMobile\logs\metrics.csv')
+per_class_df = pd.read_csv('/outputs/mid-distilledMobile\logs\per_class_metrics.csv')
 
                                                           
                               
@@ -114,7 +114,7 @@ plt.tight_layout()
 
 
                          
-plt.savefig('D:\MachineLearning\GraduateDesign\outputs\cityscapes_deeplabv3plus_20260308_193910\logsmodel_performance_analysis.png', dpi=300, bbox_inches='tight',
+plt.savefig('D:\MachineLearning\GraduateDesign\outputs\cityscapes_deeplabv3plus_mobile_distill_20260311_233247\logs\logsmodel_performance_analysis.png', dpi=300, bbox_inches='tight',
             facecolor='white', edgecolor='none')
 plt.close()
 
