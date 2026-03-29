@@ -412,6 +412,10 @@ def main() -> None:
         output_stride=cfg.output_stride,
         aspp_dropout=cfg.aspp_dropout,
         decoder_dropout=cfg.decoder_dropout,
+        use_context_block=cfg.use_context_block,
+        context_block_reduction=cfg.context_block_reduction,
+        context_block_dilations=cfg.context_block_dilations,
+        context_block_dropout=cfg.context_block_dropout,
     )
     ratio = 3000 / (50 * len(train_loader))
     print("ratio:", ratio)
