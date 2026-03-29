@@ -58,6 +58,10 @@ class TrainConfig:
     backbone_name: str = "rsnet-100"          #50/100->50/101
     aspp_dropout: float = 0.05
     decoder_dropout: float = 0.15
+    use_context_block: bool = True
+    context_block_reduction: int = 4
+    context_block_dilations: tuple[int, int] = (3, 6)
+    context_block_dropout: float = 0.1
     aux_loss_weight: float = 0.3              #辅助损失权重
 
     #预处理
