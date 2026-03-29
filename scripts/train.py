@@ -198,18 +198,25 @@ def train_one_epoch(
 
         with torch.amp.autocast('cuda', enabled=use_amp):
             logits, aux_logits = model(imgs, return_aux=True)
+
             if return_loss_components:
                 main_loss, loss_components = criterion(logits, masks, return_components=True)
-                aux_loss = criterion(aux_logits, masks)
                 loss_components = dict(loss_components)
-                loss_components["main"] = float(main_loss.detach())
-                loss_components["aux"] = float(aux_loss.detach())
             else:
                 main_loss = criterion(logits, masks)
-                aux_loss = criterion(aux_logits, masks)
                 loss_components = None
+
+            aux_loss = torch.nn.functional.cross_entropy(
+                aux_logits,
+                masks,
+                ignore_index=cfg.ignore_index,
+            )
+
             loss = main_loss + float(cfg.aux_loss_weight) * aux_loss
+
             if loss_components is not None:
+                loss_components["main"] = float(main_loss.detach())
+                loss_components["aux"] = float(aux_loss.detach())
                 loss_components["total"] = float(loss.detach())
 
         scaler.scale(loss).backward()
@@ -636,19 +643,19 @@ def main() -> None:
             torch.save(ckpt, out.ckpt_dir / "best.pth")
             print(f"[INFO] New best mIoU = {best_miou:.4f} -> saved best.pth (current val_loss={val_loss:.4f})")
 
-        if epoch % cfg.save_vis_every == 0:
-            print(f"[INFO] Saving visualizations (best.pth) at epoch {epoch} ...")
-            save_vis_using_best_ckpt(
-                model=model,
-                val_loader=val_loader,
-                device=device,
-                out_dir=out.vis_dir,
-                id2color=id2color_vis,
-                ignore_index=cfg.ignore_index,
-                epoch=epoch,
-                max_items=cfg.save_vis_max_items,
-                best_ckpt_path=out.ckpt_dir / "best.pth",
-            )
+        #if epoch % cfg.save_vis_every == 0:
+        #    print(f"[INFO] Saving visualizations (best.pth) at epoch {epoch} ...")
+        #    save_vis_using_best_ckpt(
+        #        model=model,
+        #        val_loader=val_loader,
+        #        device=device,
+        #        out_dir=out.vis_dir,
+        #        id2color=id2color_vis,
+        #        ignore_index=cfg.ignore_index,
+        #        epoch=epoch,
+        #        max_items=cfg.save_vis_max_items,
+        #        best_ckpt_path=out.ckpt_dir / "best.pth",
+        #    )
 
         print(f"... lr={float(train_stats['last_lr']):.8f}")
 
