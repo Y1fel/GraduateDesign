@@ -4,6 +4,7 @@ import torch.nn.functional as F
 
 from src.models.encoder import ResNetBackbone
 from src.models.aspp import ASPP
+from src.models.context_block import ContextEnhancementBlock
 from src.models.decoder import DeepLabV3PlusDecoder
 
 
@@ -18,6 +19,10 @@ class DeepLabV3Plus(nn.Module):
         decoder_channels: int = 256,
         aspp_dropout: float = 0.1,
         decoder_dropout: float = 0.2,
+        use_context_block: bool = True,
+        context_block_reduction: int = 4,
+        context_block_dilations: tuple[int, int] = (3, 6),
+        context_block_dropout: float = 0.1,
     ):
         super().__init__()
 
@@ -27,7 +32,6 @@ class DeepLabV3Plus(nn.Module):
             backbone_name=backbone_name,
         )
 
-                                                                     
         if output_stride == 16:
             rates = (6, 12, 18)
         elif output_stride == 8:
@@ -41,6 +45,17 @@ class DeepLabV3Plus(nn.Module):
             atrous_rates=rates,
             dropout=aspp_dropout,
         )
+
+        self.use_context_block = bool(use_context_block)
+        if self.use_context_block:
+            self.context_block = ContextEnhancementBlock(
+                channels=aspp_out_channels,
+                reduction=context_block_reduction,
+                dilations=context_block_dilations,
+                dropout=context_block_dropout,
+            )
+        else:
+            self.context_block = nn.Identity()
 
         self.decoder = DeepLabV3PlusDecoder(
             low_level_in_channels=self.backbone.low_level_channels,
@@ -65,6 +80,7 @@ class DeepLabV3Plus(nn.Module):
 
         low_level, _, high_level = self.backbone(x)
         aspp_feat = self.aspp(high_level)
+        aspp_feat = self.context_block(aspp_feat)
         dec_feat = self.decoder(low_level, aspp_feat)
         logits = self.classifier(dec_feat)
         logits = F.interpolate(logits, size=input_size, mode="bilinear", align_corners=False)
