@@ -190,8 +190,6 @@ def _load_teacher_model(cfg: MobileTrainConfig, device: torch.device) -> nn.Modu
         raise RuntimeError("Teacher checkpoint format invalid: no state dict found")
 
     teacher_arch = _detect_teacher_arch(state, str(cfg.distill_teacher_arch))
-    teacher_has_context_block = any(k.startswith("context_block.") for k in state.keys())
-
     if teacher_arch == "resnet":
         teacher = DeepLabV3Plus(
             num_classes=cfg.num_classes,
@@ -200,7 +198,6 @@ def _load_teacher_model(cfg: MobileTrainConfig, device: torch.device) -> nn.Modu
             output_stride=cfg.distill_teacher_output_stride,
             aspp_dropout=cfg.aspp_dropout,
             decoder_dropout=cfg.decoder_dropout,
-            use_context_block=teacher_has_context_block,
         )
     else:
         teacher = DeepLabV3PlusMobile(
