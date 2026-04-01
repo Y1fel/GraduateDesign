@@ -4,8 +4,8 @@ import torch.nn.functional as F
 
 from src.models.encoder import ResNetBackbone
 from src.models.aspp import ASPP
-from src.models.context_block import ContextEnhancementBlock
 from src.models.decoder import DeepLabV3PlusDecoder
+from src.models.ocr import ConvBNReLU, SpatialGatherModule, SpatialOCRModule
 
 
 class DeepLabV3Plus(nn.Module):
@@ -19,12 +19,13 @@ class DeepLabV3Plus(nn.Module):
         decoder_channels: int = 256,
         aspp_dropout: float = 0.1,
         decoder_dropout: float = 0.2,
-        use_context_block: bool = True,
-        context_block_reduction: int = 4,
-        context_block_dilations: tuple[int, int] = (3, 6),
-        context_block_dropout: float = 0.1,
+        segmentation_head: str = "aspp",
+        ocr_mid_channels: int = 512,
+        ocr_key_channels: int = 256,
+        ocr_dropout: float = 0.05,
     ):
         super().__init__()
+        self.segmentation_head = str(segmentation_head).lower()
 
         self.backbone = ResNetBackbone(
             pretrained=backbone_pretrained,
@@ -39,27 +40,41 @@ class DeepLabV3Plus(nn.Module):
         else:
             raise ValueError("output_stride must be 8 or 16")
 
-        self.aspp = ASPP(
-            in_channels=self.backbone.out_channels,
-            out_channels=aspp_out_channels,
-            atrous_rates=rates,
-            dropout=aspp_dropout,
-        )
-
-        self.use_context_block = bool(use_context_block)
-        if self.use_context_block:
-            self.context_block = ContextEnhancementBlock(
-                channels=aspp_out_channels,
-                reduction=context_block_reduction,
-                dilations=context_block_dilations,
-                dropout=context_block_dropout,
+        if self.segmentation_head == "aspp":
+            self.aspp = ASPP(
+                in_channels=self.backbone.out_channels,
+                out_channels=aspp_out_channels,
+                atrous_rates=rates,
+                dropout=aspp_dropout,
             )
+            head_out_channels = aspp_out_channels
+            self.head = None
+            self.ocr_pre = None
+            self.ocr_gather = None
+            self.ocr_head = None
+        elif self.segmentation_head == "ocr":
+            self.aspp = None
+            self.head = None
+            self.ocr_pre = ConvBNReLU(
+                self.backbone.out_channels,
+                ocr_mid_channels,
+                kernel_size=3,
+                padding=1,
+            )
+            self.ocr_gather = SpatialGatherModule(scale=1.0)
+            self.ocr_head = SpatialOCRModule(
+                in_channels=ocr_mid_channels,
+                key_channels=ocr_key_channels,
+                out_channels=ocr_mid_channels,
+                dropout=ocr_dropout,
+            )
+            head_out_channels = ocr_mid_channels
         else:
-            self.context_block = nn.Identity()
+            raise ValueError(f"Unsupported segmentation_head: {segmentation_head}. Use 'aspp' or 'ocr'.")
 
         self.decoder = DeepLabV3PlusDecoder(
             low_level_in_channels=self.backbone.low_level_channels,
-            aspp_out_channels=aspp_out_channels,
+            aspp_out_channels=head_out_channels,
             decoder_channels=decoder_channels,
             dropout=decoder_dropout,
         )
@@ -79,15 +94,21 @@ class DeepLabV3Plus(nn.Module):
         input_size = x.shape[-2:]
 
         low_level, _, high_level = self.backbone(x)
-        aspp_feat = self.aspp(high_level)
-        aspp_feat = self.context_block(aspp_feat)
-        dec_feat = self.decoder(low_level, aspp_feat)
+        aux_logits = self.aux_classifier(high_level)
+
+        if self.segmentation_head == "aspp":
+            head_feat = self.aspp(high_level)
+        else:
+            ocr_feat = self.ocr_pre(high_level)
+            ocr_context = self.ocr_gather(ocr_feat, aux_logits)
+            head_feat = self.ocr_head(ocr_feat, ocr_context)
+
+        dec_feat = self.decoder(low_level, head_feat)
         logits = self.classifier(dec_feat)
         logits = F.interpolate(logits, size=input_size, mode="bilinear", align_corners=False)
 
         if not return_aux:
             return logits
 
-        aux_logits = self.aux_classifier(high_level)
         aux_logits = F.interpolate(aux_logits, size=input_size, mode="bilinear", align_corners=False)
         return logits, aux_logits

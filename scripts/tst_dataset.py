@@ -17,6 +17,13 @@ SAVE_COLOR = True
 SAVE_COMPARE = True
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
+
+def detect_teacher_segmentation_head(state: dict[str, torch.Tensor]) -> str:
+    if any(k.startswith("ocr_pre.") or k.startswith("ocr_head.") for k in state.keys()):
+        return "ocr"
+    return "aspp"
+
+
 def build_model(cfg: TrainConfig, ckpt_path: Path, device: torch.device, model_type: str) -> torch.nn.Module:
     ckpt = torch.load(ckpt_path, map_location="cpu")
     state = ckpt["model_state"] if isinstance(ckpt, dict) and "model_state" in ckpt else ckpt
@@ -24,12 +31,17 @@ def build_model(cfg: TrainConfig, ckpt_path: Path, device: torch.device, model_t
         raise TypeError(f"Invalid checkpoint format: expected dict-like state_dict, got {type(state)}")
 
     if model_type == "teacher":
+        teacher_head = detect_teacher_segmentation_head(state)
         model = DeepLabV3Plus(
             num_classes=cfg.num_classes,
             backbone_pretrained=False,
             backbone_name=cfg.backbone_name,
             output_stride=cfg.output_stride,
+            segmentation_head=teacher_head,
             aspp_dropout=cfg.aspp_dropout,
+            ocr_mid_channels=cfg.ocr_mid_channels,
+            ocr_key_channels=cfg.ocr_key_channels,
+            ocr_dropout=cfg.ocr_dropout,
             decoder_dropout=cfg.decoder_dropout,
         )
     else:

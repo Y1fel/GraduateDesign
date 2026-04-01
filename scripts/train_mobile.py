@@ -176,6 +176,12 @@ def _detect_teacher_arch(state: dict[str, torch.Tensor], arch_cfg: str) -> str:
     return "resnet"
 
 
+def _detect_teacher_segmentation_head(state: dict[str, torch.Tensor]) -> str:
+    if any(k.startswith("ocr_pre.") or k.startswith("ocr_head.") for k in state.keys()):
+        return "ocr"
+    return "aspp"
+
+
 def _load_teacher_model(cfg: MobileTrainConfig, device: torch.device) -> nn.Module | None:
     if not bool(cfg.use_distillation):
         return None
@@ -190,7 +196,7 @@ def _load_teacher_model(cfg: MobileTrainConfig, device: torch.device) -> nn.Modu
         raise RuntimeError("Teacher checkpoint format invalid: no state dict found")
 
     teacher_arch = _detect_teacher_arch(state, str(cfg.distill_teacher_arch))
-    teacher_has_context_block = any(k.startswith("context_block.") for k in state.keys())
+    teacher_head = _detect_teacher_segmentation_head(state)
 
     if teacher_arch == "resnet":
         teacher = DeepLabV3Plus(
@@ -198,9 +204,12 @@ def _load_teacher_model(cfg: MobileTrainConfig, device: torch.device) -> nn.Modu
             backbone_pretrained=cfg.distill_teacher_backbone_pretrained,
             backbone_name=cfg.distill_teacher_backbone_name,
             output_stride=cfg.distill_teacher_output_stride,
+            segmentation_head=teacher_head,
             aspp_dropout=cfg.aspp_dropout,
+            ocr_mid_channels=cfg.ocr_mid_channels,
+            ocr_key_channels=cfg.ocr_key_channels,
+            ocr_dropout=cfg.ocr_dropout,
             decoder_dropout=cfg.decoder_dropout,
-            use_context_block=teacher_has_context_block,
         )
     else:
         teacher = DeepLabV3PlusMobile(

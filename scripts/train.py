@@ -258,7 +258,15 @@ def train_one_epoch(
 
 
 @torch.inference_mode()
-def evaluate_loss(model, loader, criterion, device, use_amp: bool, return_loss_components: bool = False):
+def evaluate_loss(
+    model,
+    loader,
+    criterion,
+    device,
+    use_amp: bool,
+    cfg: TrainConfig,
+    return_loss_components: bool = False,
+):
     model.eval()
     total_loss = 0.0
     n = 0
@@ -269,12 +277,24 @@ def evaluate_loss(model, loader, criterion, device, use_amp: bool, return_loss_c
         masks = masks.to(device, non_blocking=True)
 
         with torch.amp.autocast('cuda', enabled=use_amp):
-            logits = model(imgs)
+            logits, aux_logits = model(imgs, return_aux=True)
             if return_loss_components:
-                loss, loss_components = criterion(logits, masks, return_components=True)
+                main_loss, loss_components = criterion(logits, masks, return_components=True)
+                loss_components = dict(loss_components)
             else:
-                loss = criterion(logits, masks)
+                main_loss = criterion(logits, masks)
                 loss_components = None
+            aux_loss = torch.nn.functional.cross_entropy(
+                aux_logits,
+                masks,
+                ignore_index=cfg.ignore_index,
+            )
+            loss = main_loss + float(cfg.aux_loss_weight) * aux_loss
+
+            if loss_components is not None:
+                loss_components["main"] = float(main_loss.detach())
+                loss_components["aux"] = float(aux_loss.detach())
+                loss_components["total"] = float(loss.detach())
 
         bs = imgs.size(0)
         total_loss += loss.item() * bs
@@ -327,31 +347,10 @@ def save_vis_using_best_ckpt(
     model.load_state_dict(cur_state, strict=True)
 
 
-def main() -> None:
-    cfg = TrainConfig()
-    set_seed(cfg.seed)
-
-    if torch.cuda.is_available():
-        torch.backends.cudnn.benchmark = True
-        torch.backends.cuda.matmul.allow_tf32 = True
-        torch.backends.cudnn.allow_tf32 = True
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"[INFO] device = {device}")
-    amp_enabled = bool(cfg.use_amp and device.type == "cuda")
-    print(f"[INFO] AMP enabled = {amp_enabled}")
-
-    id2name = {idx: name for idx, name in enumerate(CITYSCAPES_19_CLASS_NAMES)}
-    id2color_vis = CITYSCAPES_19_ID2COLOR
-
-    out = OutputManager(cfg.outputs_root, exp_name="cityscapes_deeplabv3plus")
-    out.save_config(cfg)
-    out.init_metrics()
-    print(f"[INFO] run_dir = {out.run_dir}")
-
-    train_ds = CityscapesDataset(
+def build_train_dataset(cfg: TrainConfig, split: str, annotation_type: str) -> CityscapesDataset:
+    return CityscapesDataset(
         root=cfg.data_root,
-        split="train",
+        split=split,
         ignore_index=cfg.ignore_index,
         training=True,
         hflip_prob=cfg.hflip_prob,
@@ -365,14 +364,21 @@ def main() -> None:
         color_jitter_saturation=cfg.color_jitter_saturation,
         gaussian_blur_prob=cfg.gaussian_blur_prob,
         gaussian_blur_radius_range=(cfg.gaussian_blur_radius_min, cfg.gaussian_blur_radius_max),
+        annotation_type=annotation_type,
     )
-    val_ds = CityscapesDataset(
+
+
+def build_val_dataset(cfg: TrainConfig) -> CityscapesDataset:
+    return CityscapesDataset(
         root=cfg.data_root,
         split="val",
         ignore_index=cfg.ignore_index,
         training=False,
+        annotation_type="fine",
     )
 
+
+def build_train_loader(train_ds: CityscapesDataset, cfg: TrainConfig, device: torch.device) -> DataLoader:
     train_sampler = None
     train_shuffle = True
     if cfg.use_rare_class_sampler:
@@ -383,7 +389,7 @@ def main() -> None:
         train_sampler = build_rare_class_sampler(train_ds, cfg)
         train_shuffle = False
 
-    train_loader = DataLoader(
+    return DataLoader(
         train_ds,
         batch_size=cfg.batch_size,
         shuffle=train_shuffle,
@@ -394,7 +400,10 @@ def main() -> None:
         prefetch_factor=(cfg.prefetch_factor if cfg.num_workers > 0 else None),
         drop_last=True,
     )
-    val_loader = DataLoader(
+
+
+def build_eval_loader(val_ds: CityscapesDataset, cfg: TrainConfig, device: torch.device) -> DataLoader:
+    return DataLoader(
         val_ds,
         batch_size=cfg.batch_size,
         shuffle=False,
@@ -405,34 +414,35 @@ def main() -> None:
         drop_last=False,
     )
 
-    model = DeepLabV3Plus(
+
+def build_teacher_model(cfg: TrainConfig) -> DeepLabV3Plus:
+    return DeepLabV3Plus(
         num_classes=cfg.num_classes,
         backbone_pretrained=cfg.backbone_pretrained,
         backbone_name=cfg.backbone_name,
         output_stride=cfg.output_stride,
+        segmentation_head=cfg.segmentation_head,
         aspp_dropout=cfg.aspp_dropout,
+        ocr_mid_channels=cfg.ocr_mid_channels,
+        ocr_key_channels=cfg.ocr_key_channels,
+        ocr_dropout=cfg.ocr_dropout,
         decoder_dropout=cfg.decoder_dropout,
-        use_context_block=cfg.use_context_block,
-        context_block_reduction=cfg.context_block_reduction,
-        context_block_dilations=cfg.context_block_dilations,
-        context_block_dropout=cfg.context_block_dropout,
     )
-    ratio = 3000 / (50 * len(train_loader))
-    print("ratio:", ratio)
-    model = model.to(device)
 
-    loss_mode = str(cfg.loss_mode).lower()
-    if loss_mode == "ohem+boundary":
-        loss_mode = "ohem_boundary"
-    if loss_mode not in {"baseline", "ohem", "ohem_boundary"}:
-        raise ValueError(f"Unsupported loss_mode: {cfg.loss_mode}. Use 'baseline', 'ohem' or 'ohem_boundary'.")
 
+def build_criterion(
+    train_ds: CityscapesDataset,
+    cfg: TrainConfig,
+    device: torch.device,
+    loss_mode: str,
+) -> nn.Module:
     class_weight_strategy = "power_inverse" if loss_mode == "baseline" else None
     class_weights = (
         compute_class_weights(train_ds, cfg, strategy_override=class_weight_strategy).to(device)
         if cfg.use_class_weights
         else None
     )
+
     if loss_mode == "baseline":
         criterion = CombinedCEFocalLoss(
             ce_weight=cfg.ce_weight,
@@ -441,13 +451,13 @@ def main() -> None:
             class_weights=class_weights,
             label_smoothing=cfg.label_smoothing,
             ignore_index=cfg.ignore_index,
-        ).to(device)
+        )
     elif loss_mode == "ohem":
         criterion = OHEMCELoss(
             ignore_index=cfg.ignore_index,
             ohem_ratio=cfg.ohem_ratio,
             class_weights=class_weights,
-        ).to(device)
+        )
     else:
         criterion = OHEMBoundaryLoss(
             ignore_index=cfg.ignore_index,
@@ -456,11 +466,15 @@ def main() -> None:
             ohem_weight=cfg.ohem_weight,
             boundary_weight=cfg.boundary_weight,
             boundary_kernel_size=cfg.boundary_kernel_size,
-        ).to(device)
+        )
+
+    criterion = criterion.to(device)
     if cfg.use_class_weights and hasattr(criterion, "class_weights") and criterion.class_weights is not None:
         print(f"[INFO] class_weights={criterion.class_weights.detach().cpu().tolist()}")
-    print(f"[INFO] loss_mode={cfg.loss_mode}")
+    return criterion
 
+
+def build_optimizer(model: nn.Module, cfg: TrainConfig) -> torch.optim.Optimizer:
     optimizer = torch.optim.SGD(
         model.parameters(),
         lr=cfg.lr_0,
@@ -468,201 +482,318 @@ def main() -> None:
         weight_decay=cfg.weight_decay,
         nesterov=True,
     )
-    print(f"[INFO] Optimizer = SGD (lr_0={cfg.lr_0:.2e}, momentum=0.9, nesterov=True, weight_decay={cfg.weight_decay:.2e})")
+    print(
+        f"[INFO] Optimizer = SGD (lr_0={cfg.lr_0:.2e}, momentum=0.9, "
+        f"nesterov=True, weight_decay={cfg.weight_decay:.2e})"
+    )
+    return optimizer
+
+
+def build_training_phases(cfg: TrainConfig) -> list[dict]:
+    phases: list[dict] = []
+    if bool(cfg.use_coarse_to_fine) and int(cfg.coarse_epochs) > 0:
+        phases.append(
+            {
+                "name": "coarse",
+                "split": "train_extra",
+                "annotation_type": "coarse",
+                "epochs": int(cfg.coarse_epochs),
+            }
+        )
+    phases.append(
+        {
+            "name": "fine",
+            "split": "train",
+            "annotation_type": "fine",
+            "epochs": int(cfg.epochs),
+        }
+    )
+    return phases
+
+
+def main() -> None:
+    cfg = TrainConfig()
+    set_seed(cfg.seed)
+
+    if torch.cuda.is_available():
+        torch.backends.cudnn.benchmark = True
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"[INFO] device = {device}")
+    amp_enabled = bool(cfg.use_amp and device.type == "cuda")
+    print(f"[INFO] AMP enabled = {amp_enabled}")
+    print(f"[INFO] segmentation_head = {cfg.segmentation_head}")
+
+    id2name = {idx: name for idx, name in enumerate(CITYSCAPES_19_CLASS_NAMES)}
+    id2color_vis = CITYSCAPES_19_ID2COLOR
+
+    exp_name = f"cityscapes_deeplabv3plus_{str(cfg.segmentation_head).lower()}"
+    if bool(cfg.use_coarse_to_fine) and int(cfg.coarse_epochs) > 0:
+        exp_name += "_coarse2fine"
+    out = OutputManager(cfg.outputs_root, exp_name=exp_name)
+    out.save_config(cfg)
+    out.init_metrics()
+    print(f"[INFO] run_dir = {out.run_dir}")
+
+    val_ds = build_val_dataset(cfg)
+    val_loader = build_eval_loader(val_ds, cfg, device)
+
+    model = build_teacher_model(cfg).to(device)
+
+    loss_mode = str(cfg.loss_mode).lower()
+    if loss_mode == "ohem+boundary":
+        loss_mode = "ohem_boundary"
+    if loss_mode not in {"baseline", "ohem", "ohem_boundary"}:
+        raise ValueError(f"Unsupported loss_mode: {cfg.loss_mode}. Use 'baseline', 'ohem' or 'ohem_boundary'.")
+    print(f"[INFO] loss_mode={cfg.loss_mode}")
     policy = str(cfg.lr_policy).lower()
     if policy not in {"poly", "cosine"}:
         raise ValueError(f"Unsupported lr_policy: {cfg.lr_policy}. Use 'poly' or 'cosine'.")
-    max_iter = cfg.epochs * len(train_loader)
-    print(
-        "[INFO] LR scheduler = "
-        f"{policy} (iter-based, max_iter={max_iter}, warmup_iters={cfg.warmup_iters}, "
-        f"warmup_ratio={cfg.warmup_ratio:.3f}, poly_power={cfg.poly_power:.3f}, eta_min={cfg.lr_eta_min:.2e})"
-    )
     print(f"[INFO] norm_strategy=freeze_bn={cfg.freeze_bn}")
+
+    phases = build_training_phases(cfg)
+    total_epochs = sum(int(phase["epochs"]) for phase in phases)
+    print(
+        "[INFO] training_phases = "
+        + ", ".join(
+            f"{phase['name']}[split={phase['split']}, epochs={phase['epochs']}, ann={phase['annotation_type']}]"
+            for phase in phases
+        )
+    )
 
     best_miou = -1.0
     best_val_loss = float("inf")
+    best_epoch = 0
+    best_phase = ""
+    global_epoch = 0
 
-    for epoch in range(1, cfg.epochs + 1):
-        if device.type == "cuda":
-            torch.cuda.empty_cache()
-        t0 = time.time()
+    for phase in phases:
+        phase_name = str(phase["name"])
+        phase_split = str(phase["split"])
+        phase_annotation = str(phase["annotation_type"])
+        phase_epochs = int(phase["epochs"])
 
-        global_iter_start = (epoch - 1) * len(train_loader)
-        train_stats = train_one_epoch(
-            model,
-            train_loader,
-            optimizer,
-            criterion,
-            device,
-            use_amp=amp_enabled,
-            num_classes=cfg.num_classes,
-            freeze_bn_enabled=cfg.freeze_bn,
-            cfg=cfg,
-            global_iter_start=global_iter_start,
-            max_iter=max_iter,
-            return_loss_components=(loss_mode != "baseline"),
-        )
-        train_loss = float(train_stats["loss"])
-        if loss_mode == "baseline":
-            val_loss = evaluate_loss(model, val_loader, criterion, device, use_amp=amp_enabled)
-            val_loss_components = None
-        else:
-            val_loss, val_loss_components = evaluate_loss(
-                model, val_loader, criterion, device, use_amp=amp_enabled, return_loss_components=True
-            )
-
-        val_metrics = compute_segmentation_metrics(
-            model,
-            val_loader,
-            device,
-            cfg.num_classes,
-            cfg.ignore_index,
-        )
-
-        val_miou = float(val_metrics["miou"])
-        recall_per_class = val_metrics["recall_per_class"]
-        effective_mask = [not math.isnan(float(v)) for v in recall_per_class]
-        effective_ious = [
-            float(val_metrics["iou_per_class"][i])
-            for i, ok in enumerate(effective_mask)
-            if ok and not math.isnan(float(val_metrics["iou_per_class"][i]))
-        ]
-        val_miou_effective = float(sum(effective_ious) / len(effective_ious)) if effective_ious else float("nan")
-
-        iou_per_class = val_metrics["iou_per_class"]
-        precision_per_class = val_metrics["precision_per_class"]
-        dt = time.time() - t0
-        pred_hist = train_stats["pred_hist"]
-        pred_total = int(pred_hist.sum().item())
-        dominant_ratio = float(pred_hist.max().item() / pred_total) if pred_total > 0 else 0.0
-        dominant_class = int(torch.argmax(pred_hist).item()) if pred_total > 0 else -1
-
+        train_ds = build_train_dataset(cfg, split=phase_split, annotation_type=phase_annotation)
+        train_loader = build_train_loader(train_ds, cfg, device)
+        criterion = build_criterion(train_ds, cfg, device, loss_mode)
+        optimizer = build_optimizer(model, cfg)
+        max_iter = phase_epochs * len(train_loader)
         print(
-            f"[EPOCH {epoch:03d}/{cfg.epochs}] train_loss={train_loss:.4f} "
-            f"val_loss={val_loss:.4f} val_mIoU={val_miou:.4f} val_mIoU(effective)={val_miou_effective:.4f} "
-            f"val_BF1={val_metrics['boundary_fscore']:.4f} val_TrimapIoU={val_metrics['trimap_iou']:.4f} "
-            f"data_t={train_stats['avg_data_time']:.3f}s iter_t={train_stats['avg_compute_time']:.3f}s "
-            f"grad_norm(avg)={train_stats['avg_grad_norm']:.4f} lr={float(train_stats['last_lr']):.8f} time={dt:.1f}s"
+            f"[INFO] Starting phase={phase_name} split={phase_split} annotation={phase_annotation} "
+            f"epochs={phase_epochs} train_size={len(train_ds)} max_iter={max_iter}"
         )
-        print(f"[TRAIN-PRED-HIST] counts={pred_hist.tolist()}")
         print(
-            f"[TRAIN-PRED-HIST] dominant_class={dominant_class} dominant_ratio={dominant_ratio:.4f} "
-            f"warn_threshold={cfg.dominant_class_warn_ratio:.2f}"
+            "[INFO] LR scheduler = "
+            f"{policy} (phase={phase_name}, max_iter={max_iter}, warmup_iters={cfg.warmup_iters}, "
+            f"warmup_ratio={cfg.warmup_ratio:.3f}, poly_power={cfg.poly_power:.3f}, eta_min={cfg.lr_eta_min:.2e})"
         )
-        if dominant_ratio >= cfg.dominant_class_warn_ratio:
-            print(
-                "[ALERT] Predicted class distribution is highly imbalanced: "
-                f"class={dominant_class}, ratio={dominant_ratio:.4f}."
-            )
-        print("[PER-CLASS] class_id class_name iou precision recall")
-        per_class_rows = []
-        for class_id in range(cfg.num_classes):
-            class_name = id2name.get(class_id, id2name.get(str(class_id), f"class_{class_id}"))
-            iou_val = float(iou_per_class[class_id])
-            precision_val = float(precision_per_class[class_id])
-            recall_val = float(recall_per_class[class_id])
-            print(
-                f"[PER-CLASS] {class_id:02d} {class_name:<18} "
-                f"iou={iou_val:.4f} precision={precision_val:.4f} recall={recall_val:.4f}"
-            )
-            per_class_rows.append((class_id, class_name, iou_val, precision_val, recall_val))
 
-        if (
-            loss_mode != "baseline"
-            and (epoch % max(1, int(cfg.report_loss_every)) == 0)
-            and train_stats["loss_components"] is not None
-            and val_loss_components is not None
-        ):
-            trc = train_stats["loss_components"]
-            vac = val_loss_components
-            tr_boundary = float(trc.get("boundary", 0.0))
-            va_boundary = float(vac.get("boundary", 0.0))
-            print(
-                "[LOSS-COMP] "
-                f"epoch={epoch:03d} train(ohem={trc['ohem_ce']:.4f}, boundary={tr_boundary:.4f}, total={trc['total']:.4f}) "
-                f"val(ohem={vac['ohem_ce']:.4f}, boundary={va_boundary:.4f}, total={vac['total']:.4f})"
-            )
-            out.append_loss_components(epoch, "train", trc["ohem_ce"], tr_boundary, trc["total"])
-            out.append_loss_components(epoch, "val", vac["ohem_ce"], va_boundary, vac["total"])
+        for phase_epoch in range(1, phase_epochs + 1):
+            global_epoch += 1
+            if device.type == "cuda":
+                torch.cuda.empty_cache()
+            t0 = time.time()
 
-        valid_rows = [row for row in per_class_rows if not math.isnan(row[2])]
-        if valid_rows:
-            bottom_k = min(5, len(valid_rows))
-            bottom_rows = sorted(valid_rows, key=lambda row: row[2])[:bottom_k]
-            print(f"[PER-CLASS][BOTTOM-{bottom_k}] Lowest IoU classes:")
-            for class_id, class_name, iou_val, precision_val, recall_val in bottom_rows:
-                print(
-                    f"[PER-CLASS][BOTTOM] {class_id:02d} {class_name:<18} "
-                    f"iou={iou_val:.4f} precision={precision_val:.4f} recall={recall_val:.4f}"
+            global_iter_start = (phase_epoch - 1) * len(train_loader)
+            train_stats = train_one_epoch(
+                model,
+                train_loader,
+                optimizer,
+                criterion,
+                device,
+                use_amp=amp_enabled,
+                num_classes=cfg.num_classes,
+                freeze_bn_enabled=cfg.freeze_bn,
+                cfg=cfg,
+                global_iter_start=global_iter_start,
+                max_iter=max_iter,
+                return_loss_components=(loss_mode != "baseline"),
+            )
+            train_loss = float(train_stats["loss"])
+            if loss_mode == "baseline":
+                val_loss = evaluate_loss(
+                    model,
+                    val_loader,
+                    criterion,
+                    device,
+                    use_amp=amp_enabled,
+                    cfg=cfg,
+                )
+                val_loss_components = None
+            else:
+                val_loss, val_loss_components = evaluate_loss(
+                    model,
+                    val_loader,
+                    criterion,
+                    device,
+                    use_amp=amp_enabled,
+                    cfg=cfg,
+                    return_loss_components=True,
                 )
 
-        if (
-            cfg.use_class_weights
-            and (epoch % max(1, int(cfg.class_weight_boost_low_iou_every)) == 0)
-        ):
-            boost_low_iou_class_weights(criterion, list(iou_per_class), cfg)
-
-        if device.type == "cuda":
-            peak = torch.cuda.max_memory_allocated() / 1024**3
-            print(f"[MEM] peak_allocated = {peak:.2f} GB")
-
-        out.append_metrics(
-            epoch=epoch,
-            train_loss=train_loss,
-            val_loss=val_loss,
-            val_miou=val_miou_effective,
-            val_bf1=float(val_metrics["boundary_fscore"]),
-            lr=float(train_stats["last_lr"]),
-            dt=dt,
-        )
-        for class_id, class_name, iou_val, precision_val, recall_val in per_class_rows:
-            out.append_per_class_metrics(
-                epoch=epoch,
-                class_id=class_id,
-                class_name=class_name,
-                iou=iou_val,
-                precision=precision_val,
-                recall=recall_val,
+            val_metrics = compute_segmentation_metrics(
+                model,
+                val_loader,
+                device,
+                cfg.num_classes,
+                cfg.ignore_index,
             )
 
-        ckpt = {
-            "epoch": epoch,
-            "model_state": model.state_dict(),
-            "optimizer_state": optimizer.state_dict(),
-            "best_miou": best_miou,
-            "best_val_loss": best_val_loss,
-        }
+            val_miou = float(val_metrics["miou"])
+            recall_per_class = val_metrics["recall_per_class"]
+            effective_mask = [not math.isnan(float(v)) for v in recall_per_class]
+            effective_ious = [
+                float(val_metrics["iou_per_class"][i])
+                for i, ok in enumerate(effective_mask)
+                if ok and not math.isnan(float(val_metrics["iou_per_class"][i]))
+            ]
+            val_miou_effective = float(sum(effective_ious) / len(effective_ious)) if effective_ious else float("nan")
 
-        if epoch % 10 == 0:
-            torch.save(ckpt, out.ckpt_dir / f"epoch_{epoch:03d}.pth")
+            iou_per_class = val_metrics["iou_per_class"]
+            precision_per_class = val_metrics["precision_per_class"]
+            dt = time.time() - t0
+            pred_hist = train_stats["pred_hist"]
+            pred_total = int(pred_hist.sum().item())
+            dominant_ratio = float(pred_hist.max().item() / pred_total) if pred_total > 0 else 0.0
+            dominant_class = int(torch.argmax(pred_hist).item()) if pred_total > 0 else -1
 
-        if (not math.isnan(val_loss)) and (val_loss < best_val_loss):
-            best_val_loss = val_loss
+            print(
+                f"[PHASE {phase_name.upper()}][EPOCH {phase_epoch:03d}/{phase_epochs}] "
+                f"[GLOBAL {global_epoch:03d}/{total_epochs}] train_loss={train_loss:.4f} "
+                f"val_loss={val_loss:.4f} val_mIoU={val_miou:.4f} val_mIoU(effective)={val_miou_effective:.4f} "
+                f"val_BF1={val_metrics['boundary_fscore']:.4f} val_TrimapIoU={val_metrics['trimap_iou']:.4f} "
+                f"data_t={train_stats['avg_data_time']:.3f}s iter_t={train_stats['avg_compute_time']:.3f}s "
+                f"grad_norm(avg)={train_stats['avg_grad_norm']:.4f} lr={float(train_stats['last_lr']):.8f} time={dt:.1f}s"
+            )
+            print(f"[TRAIN-PRED-HIST] counts={pred_hist.tolist()}")
+            print(
+                f"[TRAIN-PRED-HIST] dominant_class={dominant_class} dominant_ratio={dominant_ratio:.4f} "
+                f"warn_threshold={cfg.dominant_class_warn_ratio:.2f}"
+            )
+            if dominant_ratio >= cfg.dominant_class_warn_ratio:
+                print(
+                    "[ALERT] Predicted class distribution is highly imbalanced: "
+                    f"class={dominant_class}, ratio={dominant_ratio:.4f}."
+                )
+            print("[PER-CLASS] class_id class_name iou precision recall")
+            per_class_rows = []
+            for class_id in range(cfg.num_classes):
+                class_name = id2name.get(class_id, id2name.get(str(class_id), f"class_{class_id}"))
+                iou_val = float(iou_per_class[class_id])
+                precision_val = float(precision_per_class[class_id])
+                recall_val = float(recall_per_class[class_id])
+                print(
+                    f"[PER-CLASS] {class_id:02d} {class_name:<18} "
+                    f"iou={iou_val:.4f} precision={precision_val:.4f} recall={recall_val:.4f}"
+                )
+                per_class_rows.append((class_id, class_name, iou_val, precision_val, recall_val))
 
-        if (not math.isnan(val_miou_effective)) and (val_miou_effective > best_miou):
-            best_miou = val_miou_effective
-            ckpt["best_miou"] = best_miou
-            ckpt["best_val_loss"] = best_val_loss
-            torch.save(ckpt, out.ckpt_dir / "best.pth")
-            print(f"[INFO] New best mIoU = {best_miou:.4f} -> saved best.pth (current val_loss={val_loss:.4f})")
+            if (
+                loss_mode != "baseline"
+                and (global_epoch % max(1, int(cfg.report_loss_every)) == 0)
+                and train_stats["loss_components"] is not None
+                and val_loss_components is not None
+            ):
+                trc = train_stats["loss_components"]
+                vac = val_loss_components
+                tr_boundary = float(trc.get("boundary", 0.0))
+                va_boundary = float(vac.get("boundary", 0.0))
+                print(
+                    "[LOSS-COMP] "
+                    f"global_epoch={global_epoch:03d} train(ohem={trc['ohem_ce']:.4f}, boundary={tr_boundary:.4f}, total={trc['total']:.4f}) "
+                    f"val(ohem={vac['ohem_ce']:.4f}, boundary={va_boundary:.4f}, total={vac['total']:.4f})"
+                )
+                out.append_loss_components(global_epoch, "train", trc["ohem_ce"], tr_boundary, trc["total"])
+                out.append_loss_components(global_epoch, "val", vac["ohem_ce"], va_boundary, vac["total"])
 
-        #if epoch % cfg.save_vis_every == 0:
-        #    print(f"[INFO] Saving visualizations (best.pth) at epoch {epoch} ...")
-        #    save_vis_using_best_ckpt(
-        #        model=model,
-        #        val_loader=val_loader,
-        #        device=device,
-        #        out_dir=out.vis_dir,
-        #        id2color=id2color_vis,
-        #        ignore_index=cfg.ignore_index,
-        #        epoch=epoch,
-        #        max_items=cfg.save_vis_max_items,
-        #        best_ckpt_path=out.ckpt_dir / "best.pth",
-        #    )
+            valid_rows = [row for row in per_class_rows if not math.isnan(row[2])]
+            if valid_rows:
+                bottom_k = min(5, len(valid_rows))
+                bottom_rows = sorted(valid_rows, key=lambda row: row[2])[:bottom_k]
+                print(f"[PER-CLASS][BOTTOM-{bottom_k}] Lowest IoU classes:")
+                for class_id, class_name, iou_val, precision_val, recall_val in bottom_rows:
+                    print(
+                        f"[PER-CLASS][BOTTOM] {class_id:02d} {class_name:<18} "
+                        f"iou={iou_val:.4f} precision={precision_val:.4f} recall={recall_val:.4f}"
+                    )
 
-        print(f"... lr={float(train_stats['last_lr']):.8f}")
+            if (
+                cfg.use_class_weights
+                and (global_epoch % max(1, int(cfg.class_weight_boost_low_iou_every)) == 0)
+            ):
+                boost_low_iou_class_weights(criterion, list(iou_per_class), cfg)
 
+            if device.type == "cuda":
+                peak = torch.cuda.max_memory_allocated() / 1024**3
+                print(f"[MEM] peak_allocated = {peak:.2f} GB")
+
+            out.append_metrics(
+                epoch=global_epoch,
+                train_loss=train_loss,
+                val_loss=val_loss,
+                val_miou=val_miou_effective,
+                val_bf1=float(val_metrics["boundary_fscore"]),
+                lr=float(train_stats["last_lr"]),
+                dt=dt,
+            )
+            for class_id, class_name, iou_val, precision_val, recall_val in per_class_rows:
+                out.append_per_class_metrics(
+                    epoch=global_epoch,
+                    class_id=class_id,
+                    class_name=class_name,
+                    iou=iou_val,
+                    precision=precision_val,
+                    recall=recall_val,
+                )
+
+            ckpt = {
+                "epoch": global_epoch,
+                "phase": phase_name,
+                "phase_epoch": phase_epoch,
+                "model_state": model.state_dict(),
+                "optimizer_state": optimizer.state_dict(),
+                "best_miou": best_miou,
+                "best_val_loss": best_val_loss,
+            }
+
+            if (not math.isnan(val_loss)) and (val_loss < best_val_loss):
+                best_val_loss = val_loss
+
+            if (not math.isnan(val_miou_effective)) and (val_miou_effective > best_miou):
+                best_miou = val_miou_effective
+                best_epoch = global_epoch
+                best_phase = phase_name
+                ckpt["best_miou"] = best_miou
+                ckpt["best_val_loss"] = best_val_loss
+                torch.save(ckpt, out.ckpt_dir / "best.pth")
+                print(
+                    f"[INFO] New best mIoU = {best_miou:.4f} -> saved best.pth "
+                    f"(phase={phase_name}, global_epoch={global_epoch:03d}, current val_loss={val_loss:.4f})"
+                )
+
+            print(f"... lr={float(train_stats['last_lr']):.8f}")
+
+    best_ckpt_path = out.ckpt_dir / "best.pth"
+    if best_ckpt_path.exists():
+        print(
+            "[INFO] Saving final visualizations with best.pth "
+            f"(best_phase={best_phase}, best_epoch={best_epoch:03d}, save_epoch={total_epochs:03d}) ..."
+        )
+        save_vis_using_best_ckpt(
+            model=model,
+            val_loader=val_loader,
+            device=device,
+            out_dir=out.vis_dir,
+            id2color=id2color_vis,
+            ignore_index=cfg.ignore_index,
+            epoch=total_epochs,
+            max_items=cfg.save_vis_max_items,
+            best_ckpt_path=best_ckpt_path,
+        )
+    else:
+        print("[WARN] best.pth not found, skipping final visualization export.")
 
     print("[DONE] Training finished.")
 

@@ -55,19 +55,21 @@ class TrainConfig:
     output_stride: int = 8                    #步长
     backbone_pretrained: bool = True          #backbone预训练
     backbone_name: str = "rsnet-100"          #50/100->50/101
+    segmentation_head: str = "aspp"            # "aspp" / "ocr"
     aspp_dropout: float = 0.05
+    ocr_mid_channels: int = 512
+    ocr_key_channels: int = 256
+    ocr_dropout: float = 0.05
     decoder_dropout: float = 0.15
-    use_context_block: bool = True
-    context_block_reduction: int = 4
-    context_block_dilations: tuple[int, int] = (3, 6)
-    context_block_dropout: float = 0.1
+    use_coarse_to_fine: bool = False
+    coarse_epochs: int = 30
     aux_loss_weight: float = 0.3              #辅助损失权重
 
     #预处理
     crop_h: int = 769
     crop_w: int = 769                       #随即裁剪尺寸
     crop_retry: int = 10                      #重试次数
-    crop_max_class_ratio: float = 0.75        #单类最大占比
+    crop_max_class_ratio: float = 0.70        #单类最大占比
     train_multi_scale_min: float = 0.5
     train_multi_scale_max: float = 2          #多尺度放缩比例
     hflip_prob: float = 0.5                   #水平翻转概率
@@ -98,9 +100,9 @@ class TrainConfig:
     focal_gamma: float = 2.0
 
     #OHEM
-    ohem_ratio: float = 0.15               #OHEM保留的困难像素比例
+    ohem_ratio: float = 0.20               #OHEM保留的困难像素比例
     ohem_weight: float = 1                 #OHEM权重
-    boundary_weight: float = 0.15         #boundary_loss权重
+    boundary_weight: float = 0.15          #boundary_loss权重
     boundary_kernel_size: int = 3          #边界提取核尺寸
     report_loss_every: int = 5
 
