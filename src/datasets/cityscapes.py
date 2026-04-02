@@ -36,11 +36,8 @@ class CityscapesDataset(Dataset):
         color_jitter_saturation: float = 0.0,
         gaussian_blur_prob: float = 0.0,
         gaussian_blur_radius_range: Tuple[float, float] = (0.0, 0.0),
-        annotation_type: str = "auto",
     ) -> None:
-        assert split in ("train", "train_extra", "val", "test"), (
-            f"split must be train/train_extra/val/test, got {split}"
-        )
+        assert split in ("train", "val", "test"), f"split must be train/val/test, got {split}"
 
         self.root = Path(root)
         self.split = split
@@ -71,19 +68,9 @@ class CityscapesDataset(Dataset):
             self.labels_root = None
             self.label_suffix = ""
         else:
-            resolved_annotation_type = str(annotation_type).lower()
-            if resolved_annotation_type == "auto":
-                resolved_annotation_type = "coarse" if split == "train_extra" else "fine"
-            if resolved_annotation_type not in {"fine", "coarse"}:
-                raise ValueError(
-                    f"annotation_type must be 'auto', 'fine' or 'coarse', got {annotation_type}"
-                )
-
-            self.annotation_type = resolved_annotation_type
-            label_dir = "gtFine" if self.annotation_type == "fine" else "gtCoarse"
-            suffix_tag = "gtFine" if self.annotation_type == "fine" else "gtCoarse"
-            self.labels_root = self.root / label_dir / split
-            self.label_suffix = f"_{suffix_tag}_labelIds.png"
+            self.annotation_type = "fine"
+            self.labels_root = self.root / "gtFine" / split
+            self.label_suffix = "_gtFine_labelIds.png"
 
         if not self.images_root.exists():
             raise FileNotFoundError(f"Images dir not found: {self.images_root}")

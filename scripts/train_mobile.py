@@ -137,7 +137,7 @@ def _compute_lr_at_iter(global_iter: int, max_iter: int, cfg: MobileTrainConfig)
     if max_iter <= 0:
         raise ValueError(f"max_iter must be positive, got {max_iter}")
 
-    warmup_iters = max(0, int(cfg.warmup_iters))
+    warmup_iters = max(0, min(int(cfg.warmup_iters), max_iter - 1))
     base_lr = float(cfg.lr_0)
     eta_min = float(cfg.lr_eta_min)
     policy = str(cfg.lr_policy).lower()

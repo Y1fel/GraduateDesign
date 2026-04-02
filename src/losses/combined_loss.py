@@ -8,6 +8,41 @@ from src.losses.focalloss import FocalLoss
 from src.losses.boundaryloss import BoundaryLoss
 
 
+class CrossEntropySegLoss(nn.Module):
+    def __init__(
+        self,
+        class_weights: torch.Tensor | None = None,
+        label_smoothing: float = 0.0,
+        ignore_index: int = 255,
+    ) -> None:
+        super().__init__()
+        self.ignore_index = int(ignore_index)
+        self.label_smoothing = float(label_smoothing)
+        self.register_buffer("class_weights", class_weights if class_weights is not None else None)
+
+    def update_class_weights(self, new_weights: torch.Tensor) -> None:
+        if self.class_weights is None:
+            self.register_buffer("class_weights", new_weights.detach().clone())
+        else:
+            self.class_weights.copy_(new_weights.detach())
+
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor, return_components: bool = False):
+        ce = F.cross_entropy(
+            logits,
+            targets,
+            weight=self.class_weights,
+            ignore_index=self.ignore_index,
+            label_smoothing=self.label_smoothing,
+        )
+        if return_components:
+            return ce, {
+                "ce": float(ce.detach().item()),
+                "boundary": 0.0,
+                "total": float(ce.detach().item()),
+            }
+        return ce
+
+
 class CombinedCEFocalLoss(nn.Module):
     def __init__(
         self,
