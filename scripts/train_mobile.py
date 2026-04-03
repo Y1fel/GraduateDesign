@@ -6,21 +6,15 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from PIL import Image
 from torch.nn.modules.batchnorm import _BatchNorm
 from torch.utils.data import DataLoader, WeightedRandomSampler
 
 from config.config import MobileTrainConfig
 from src.commom.output_manager import OutputManager
 from src.commom.repro import set_seed
-from src.datasets.cityscapes import CityscapesDataset
-from src.datasets.cityscapes_labels import (
-    CITYSCAPES_19_CLASS_NAMES,
-    CITYSCAPES_19_ID2COLOR,
-    CITYSCAPES_34_TO_19,
-)
+from src.datasets.factory import apply_dataset_profile, build_dataset, normalize_dataset_name, resolve_dataset_root
 from src.eval.mIoU import compute_segmentation_metrics
-from src.losses.combined_loss import CombinedCEFocalLoss, OHEMBoundaryLoss, OHEMCELoss
+from src.losses.combined_loss import CrossEntropySegLoss, CombinedCEFocalLoss, OHEMBoundaryLoss, OHEMCELoss
 from src.models.deeplabv3_plus import DeepLabV3Plus
 from src.models.deeplabv3_plus_moblie import DeepLabV3PlusMobile
 from src.viz.visualizer import save_predictions_triplet
@@ -49,18 +43,15 @@ def _compute_grad_norm(model: nn.Module) -> float:
     return total ** 0.5
 
 
-def _build_rare_class_sampler(train_ds: CityscapesDataset, cfg: MobileTrainConfig) -> WeightedRandomSampler:
-    rare_ids = set(int(cid) for cid in cfg.rare_class_ids)
-    remap = np.asarray(CITYSCAPES_34_TO_19, dtype=np.uint8)
+def _build_rare_class_sampler(train_ds, cfg: MobileTrainConfig) -> WeightedRandomSampler:
+    rare_ids = {int(cid) for cid in cfg.rare_class_ids if 0 <= int(cid) < int(cfg.num_classes)}
     weights = np.ones(len(train_ds.img_paths), dtype=np.float64)
 
     for idx, img_path in enumerate(train_ds.img_paths):
         mask_path = train_ds._resolve_mask(img_path)
-        mask_34 = np.array(Image.open(mask_path).convert("L"), dtype=np.uint8)
-        valid = mask_34 <= 33
-        mapped = np.full(mask_34.shape, fill_value=train_ds.ignore_index, dtype=np.uint8)
-        mapped[valid] = remap[mask_34[valid]]
-        present = set(np.unique(mapped).tolist())
+        mapped = train_ds.load_mask_ids(mask_path)
+        valid = mapped != train_ds.ignore_index
+        present = set(np.unique(mapped[valid]).tolist()) if np.any(valid) else set()
         if any(cid in present for cid in rare_ids):
             weights[idx] *= float(cfg.rare_class_weight_multiplier)
 
@@ -72,16 +63,14 @@ def _build_rare_class_sampler(train_ds: CityscapesDataset, cfg: MobileTrainConfi
     )
 
 
-def _compute_class_weights(train_ds: CityscapesDataset, cfg: MobileTrainConfig) -> torch.Tensor:
-    remap = np.asarray(CITYSCAPES_34_TO_19, dtype=np.uint8)
+def _compute_class_weights(train_ds, cfg: MobileTrainConfig) -> torch.Tensor:
     counts = np.zeros(cfg.num_classes, dtype=np.float64)
 
     for img_path in train_ds.img_paths:
         mask_path = train_ds._resolve_mask(img_path)
-        mask_34 = np.array(Image.open(mask_path).convert("L"), dtype=np.uint8)
-        valid = mask_34 <= 33
-        mapped = remap[mask_34[valid]]
-        mapped = mapped[mapped < cfg.num_classes]
+        mapped = train_ds.load_mask_ids(mask_path)
+        valid = (mapped != train_ds.ignore_index) & (mapped >= 0) & (mapped < cfg.num_classes)
+        mapped = mapped[valid]
         counts += np.bincount(mapped, minlength=cfg.num_classes).astype(np.float64)
 
     counts = np.maximum(counts, 1.0)
@@ -102,10 +91,16 @@ def _compute_class_weights(train_ds: CityscapesDataset, cfg: MobileTrainConfig) 
 
 def _build_criterion(cfg: MobileTrainConfig, class_weights: torch.Tensor | None, device: torch.device) -> nn.Module:
     mode = str(cfg.loss_mode).lower().replace("+", "_")
-    if mode not in {"baseline", "ohem", "ohem_boundary"}:
-        raise ValueError(f"Unsupported loss_mode={cfg.loss_mode}. Use baseline/ohem/ohem_boundary")
+    if mode not in {"ce", "baseline", "ohem", "ohem_boundary"}:
+        raise ValueError(f"Unsupported loss_mode={cfg.loss_mode}. Use ce/baseline/ohem/ohem_boundary")
 
-    if mode == "baseline":
+    if mode == "ce":
+        criterion = CrossEntropySegLoss(
+            class_weights=class_weights,
+            label_smoothing=cfg.label_smoothing,
+            ignore_index=cfg.ignore_index,
+        )
+    elif mode == "baseline":
         criterion = CombinedCEFocalLoss(
             ce_weight=cfg.ce_weight,
             focal_weight=cfg.focal_weight,
@@ -182,6 +177,24 @@ def _detect_teacher_segmentation_head(state: dict[str, torch.Tensor]) -> str:
     return "aspp"
 
 
+def _detect_decoder_upsample_mode(state: dict[str, torch.Tensor]) -> str:
+    if any(
+        k.startswith("decoder.aspp_upsample.pre.") or k.startswith("decoder.aspp_upsample.post.")
+        for k in state.keys()
+    ):
+        return "learnable"
+    return "bilinear"
+
+
+def _build_experiment_name(cfg: MobileTrainConfig) -> str:
+    exp_name = f"{normalize_dataset_name(cfg.dataset_name)}_deeplabv3plus_mobile_distill"
+    if str(cfg.decoder_upsample_mode).lower() == "bilinear":
+        exp_name += "_bilinear"
+    if not bool(cfg.use_aux_loss):
+        exp_name += "_noaux"
+    return exp_name
+
+
 def _load_teacher_model(cfg: MobileTrainConfig, device: torch.device) -> nn.Module | None:
     if not bool(cfg.use_distillation):
         return None
@@ -197,6 +210,7 @@ def _load_teacher_model(cfg: MobileTrainConfig, device: torch.device) -> nn.Modu
 
     teacher_arch = _detect_teacher_arch(state, str(cfg.distill_teacher_arch))
     teacher_head = _detect_teacher_segmentation_head(state)
+    teacher_decoder_upsample_mode = _detect_decoder_upsample_mode(state)
 
     if teacher_arch == "resnet":
         teacher = DeepLabV3Plus(
@@ -209,6 +223,7 @@ def _load_teacher_model(cfg: MobileTrainConfig, device: torch.device) -> nn.Modu
             ocr_mid_channels=cfg.ocr_mid_channels,
             ocr_key_channels=cfg.ocr_key_channels,
             ocr_dropout=cfg.ocr_dropout,
+            decoder_upsample_mode=teacher_decoder_upsample_mode,
             decoder_dropout=cfg.decoder_dropout,
         )
     else:
@@ -216,6 +231,7 @@ def _load_teacher_model(cfg: MobileTrainConfig, device: torch.device) -> nn.Modu
             num_classes=cfg.num_classes,
             output_stride=cfg.distill_teacher_output_stride,
             aspp_dropout=cfg.aspp_dropout,
+            decoder_upsample_mode=teacher_decoder_upsample_mode,
             decoder_dropout=cfg.decoder_dropout,
         )
 
@@ -225,7 +241,11 @@ def _load_teacher_model(cfg: MobileTrainConfig, device: torch.device) -> nn.Modu
     for p in teacher.parameters():
         p.requires_grad = False
 
-    print(f"[INFO] Teacher loaded: {teacher_ckpt} (arch={teacher_arch}, stride={cfg.distill_teacher_output_stride})")
+    print(
+        f"[INFO] Teacher loaded: {teacher_ckpt} "
+        f"(arch={teacher_arch}, stride={cfg.distill_teacher_output_stride}, "
+        f"decoder_upsample_mode={teacher_decoder_upsample_mode})"
+    )
     return teacher
 
 
@@ -276,7 +296,10 @@ def _compute_total_loss(
         main_loss = criterion(student_main, target)
         components = None
 
-    aux_loss = criterion(student_aux, target)
+    if cfg.use_aux_loss:
+        aux_loss = criterion(student_aux, target)
+    else:
+        aux_loss = student_main.new_tensor(0.0)
     total = main_loss + float(cfg.aux_loss_weight) * aux_loss
 
     if components is not None:
@@ -285,8 +308,12 @@ def _compute_total_loss(
 
     if teacher_main is not None and teacher_aux is not None:
         kd_main = _distill_loss(student_main, teacher_main, cfg)
-        kd_aux = _distill_loss(student_aux, teacher_aux, cfg)
-        kd_total = kd_main + float(cfg.distill_aux_weight) * kd_aux
+        if cfg.use_aux_loss:
+            kd_aux = _distill_loss(student_aux, teacher_aux, cfg)
+            kd_total = kd_main + float(cfg.distill_aux_weight) * kd_aux
+        else:
+            kd_aux = student_main.new_tensor(0.0)
+            kd_total = kd_main
         total = total + float(cfg.distill_loss_weight) * kd_total
         if components is not None:
             components["kd_main"] = float(kd_main.detach())
@@ -459,6 +486,7 @@ def _maybe_save_vis(
     out: OutputManager,
     cfg: MobileTrainConfig,
     epoch: int,
+    id2color,
 ) -> None:
     if epoch % cfg.save_vis_every != 0:
         return
@@ -468,7 +496,7 @@ def _maybe_save_vis(
         loader=val_loader,
         device=device,
         out_dir=out.vis_dir,
-        id2color=CITYSCAPES_19_ID2COLOR,
+        id2color=id2color,
         ignore_index=cfg.ignore_index,
         epoch=epoch,
         max_items=cfg.save_vis_max_items,
@@ -477,6 +505,8 @@ def _maybe_save_vis(
 
 def main() -> None:
     cfg = MobileTrainConfig()
+    apply_dataset_profile(cfg)
+    cfg.data_root = resolve_dataset_root(cfg)
     set_seed(cfg.seed)
 
     if torch.cuda.is_available():
@@ -487,35 +517,18 @@ def main() -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     amp_enabled = bool(cfg.use_amp and device.type == "cuda")
     print(f"[INFO] device={device}, amp={amp_enabled}")
+    print(f"[INFO] dataset_name={cfg.dataset_name}, data_root={cfg.data_root}")
+    print(f"[INFO] decoder_upsample_mode={cfg.decoder_upsample_mode}, use_aux_loss={cfg.use_aux_loss}")
+    train_ds = build_dataset(cfg, split="train", training=True)
+    cfg.num_classes = int(train_ds.meta.num_classes)
+    val_ds = build_dataset(cfg, split="val", training=False)
+    id2name = {idx: name for idx, name in enumerate(train_ds.meta.class_names)}
+    id2color_vis = list(train_ds.meta.id2color)
 
-    out = OutputManager(cfg.outputs_root, exp_name="cityscapes_deeplabv3plus_mobile_distill")
+    out = OutputManager(cfg.outputs_root, exp_name=_build_experiment_name(cfg))
     out.save_config(cfg)
     out.init_metrics()
     print(f"[INFO] run_dir={out.run_dir}")
-
-    train_ds = CityscapesDataset(
-        root=cfg.data_root,
-        split="train",
-        ignore_index=cfg.ignore_index,
-        training=True,
-        hflip_prob=cfg.hflip_prob,
-        multi_scale_range=(cfg.train_multi_scale_min, cfg.train_multi_scale_max),
-        random_crop_size=(cfg.crop_w, cfg.crop_h),
-        crop_retry=cfg.crop_retry,
-        crop_max_class_ratio=cfg.crop_max_class_ratio,
-        color_jitter_prob=cfg.color_jitter_prob,
-        color_jitter_brightness=cfg.color_jitter_brightness,
-        color_jitter_contrast=cfg.color_jitter_contrast,
-        color_jitter_saturation=cfg.color_jitter_saturation,
-        gaussian_blur_prob=cfg.gaussian_blur_prob,
-        gaussian_blur_radius_range=(cfg.gaussian_blur_radius_min, cfg.gaussian_blur_radius_max),
-    )
-    val_ds = CityscapesDataset(
-        root=cfg.data_root,
-        split="val",
-        ignore_index=cfg.ignore_index,
-        training=False,
-    )
 
     sampler = _build_rare_class_sampler(train_ds, cfg) if cfg.use_rare_class_sampler else None
     train_loader = DataLoader(
@@ -544,6 +557,7 @@ def main() -> None:
         num_classes=cfg.num_classes,
         output_stride=cfg.output_stride,
         aspp_dropout=cfg.aspp_dropout,
+        decoder_upsample_mode=cfg.decoder_upsample_mode,
         decoder_dropout=cfg.decoder_dropout,
     ).to(device)
 
@@ -566,11 +580,10 @@ def main() -> None:
     )
 
     max_iter = cfg.epochs * len(train_loader)
-    id2name = {idx: name for idx, name in enumerate(CITYSCAPES_19_CLASS_NAMES)}
 
     best_miou = -1.0
     best_val_loss = float("inf")
-    report_components = str(cfg.loss_mode).lower() != "baseline"
+    report_components = str(cfg.loss_mode).lower().replace("+", "_") in {"ohem", "ohem_boundary"}
 
     for epoch in range(1, cfg.epochs + 1):
         t0 = time.time()
@@ -677,7 +690,7 @@ def main() -> None:
             torch.save(ckpt, out.ckpt_dir / "best.pth")
             print(f"[INFO] New best mIoU: {best_miou:.4f}")
 
-        _maybe_save_vis(student, val_loader, device, out, cfg, epoch)
+        _maybe_save_vis(student, val_loader, device, out, cfg, epoch, id2color_vis)
 
     print("[DONE] Training completed.")
 

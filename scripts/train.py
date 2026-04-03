@@ -7,15 +7,12 @@ import torch
 from torch.nn.modules.batchnorm import _BatchNorm
 from torch.utils.data import DataLoader, WeightedRandomSampler
 import torch.nn as nn
-from PIL import Image
 
 from src.commom.output_manager import OutputManager
 from src.commom.repro import set_seed
-from src.datasets.cityscapes import CityscapesDataset
-from src.datasets.cityscapes_labels import CITYSCAPES_34_TO_19
+from src.datasets.factory import apply_dataset_profile, build_dataset, normalize_dataset_name, resolve_dataset_root
 from src.eval.mIoU import compute_segmentation_metrics
 from src.models.deeplabv3_plus import DeepLabV3Plus
-from src.datasets.cityscapes_labels import CITYSCAPES_19_CLASS_NAMES, CITYSCAPES_19_ID2COLOR
 from src.viz.visualizer import save_predictions_triplet
 from config.config import TrainConfig
 from src.losses.combined_loss import CrossEntropySegLoss, CombinedCEFocalLoss, OHEMBoundaryLoss, OHEMCELoss
@@ -45,18 +42,15 @@ def compute_grad_norm(model: nn.Module) -> float:
     return total ** 0.5
 
 
-def build_rare_class_sampler(train_ds: CityscapesDataset, cfg: TrainConfig) -> WeightedRandomSampler:
-    rare_ids = set(int(cid) for cid in cfg.rare_class_ids)
-    remap = np.asarray(CITYSCAPES_34_TO_19, dtype=np.uint8)
+def build_rare_class_sampler(train_ds, cfg: TrainConfig) -> WeightedRandomSampler:
+    rare_ids = {int(cid) for cid in cfg.rare_class_ids if 0 <= int(cid) < int(cfg.num_classes)}
     weights = np.ones(len(train_ds.img_paths), dtype=np.float64)
 
     for idx, img_path in enumerate(train_ds.img_paths):
         mask_path = train_ds._resolve_mask(img_path)
-        mask_34 = np.array(Image.open(mask_path).convert("L"), dtype=np.uint8)
-        valid = mask_34 <= 33
-        mapped = np.full(mask_34.shape, fill_value=train_ds.ignore_index, dtype=np.uint8)
-        mapped[valid] = remap[mask_34[valid]]
-        present = set(np.unique(mapped).tolist())
+        mapped = train_ds.load_mask_ids(mask_path)
+        valid = mapped != train_ds.ignore_index
+        present = set(np.unique(mapped[valid]).tolist()) if np.any(valid) else set()
         if any(cid in present for cid in rare_ids):
             weights[idx] *= float(cfg.rare_class_weight_multiplier)
 
@@ -69,16 +63,14 @@ def build_rare_class_sampler(train_ds: CityscapesDataset, cfg: TrainConfig) -> W
     )
 
 
-def compute_class_weights(train_ds: CityscapesDataset, cfg: TrainConfig, strategy_override: str | None = None) -> torch.Tensor:
-    remap = np.asarray(CITYSCAPES_34_TO_19, dtype=np.uint8)
+def compute_class_weights(train_ds, cfg: TrainConfig, strategy_override: str | None = None) -> torch.Tensor:
     counts = np.zeros(cfg.num_classes, dtype=np.float64)
 
     for img_path in train_ds.img_paths:
         mask_path = train_ds._resolve_mask(img_path)
-        mask_34 = np.array(Image.open(mask_path).convert("L"), dtype=np.uint8)
-        valid = mask_34 <= 33
-        mapped = remap[mask_34[valid]]
-        mapped = mapped[mapped < cfg.num_classes]
+        mapped = train_ds.load_mask_ids(mask_path)
+        valid = (mapped != train_ds.ignore_index) & (mapped >= 0) & (mapped < cfg.num_classes)
+        mapped = mapped[valid]
         binc = np.bincount(mapped, minlength=cfg.num_classes)
         counts += binc.astype(np.float64)
 
@@ -207,11 +199,14 @@ def train_one_epoch(
                 main_loss = criterion(logits, masks)
                 loss_components = None
 
-            aux_loss = torch.nn.functional.cross_entropy(
-                aux_logits,
-                masks,
-                ignore_index=cfg.ignore_index,
-            )
+            if cfg.use_aux_loss:
+                aux_loss = torch.nn.functional.cross_entropy(
+                    aux_logits,
+                    masks,
+                    ignore_index=cfg.ignore_index,
+                )
+            else:
+                aux_loss = logits.new_tensor(0.0)
 
             loss = main_loss + float(cfg.aux_loss_weight) * aux_loss
 
@@ -285,11 +280,14 @@ def evaluate_loss(
             else:
                 main_loss = criterion(logits, masks)
                 loss_components = None
-            aux_loss = torch.nn.functional.cross_entropy(
-                aux_logits,
-                masks,
-                ignore_index=cfg.ignore_index,
-            )
+            if cfg.use_aux_loss:
+                aux_loss = torch.nn.functional.cross_entropy(
+                    aux_logits,
+                    masks,
+                    ignore_index=cfg.ignore_index,
+                )
+            else:
+                aux_loss = logits.new_tensor(0.0)
             loss = main_loss + float(cfg.aux_loss_weight) * aux_loss
 
             if loss_components is not None:
@@ -348,36 +346,15 @@ def save_vis_using_best_ckpt(
     model.load_state_dict(cur_state, strict=True)
 
 
-def build_train_dataset(cfg: TrainConfig) -> CityscapesDataset:
-    return CityscapesDataset(
-        root=cfg.data_root,
-        split="train",
-        ignore_index=cfg.ignore_index,
-        training=True,
-        hflip_prob=cfg.hflip_prob,
-        multi_scale_range=(cfg.train_multi_scale_min, cfg.train_multi_scale_max),
-        random_crop_size=(cfg.crop_w, cfg.crop_h),
-        crop_retry=cfg.crop_retry,
-        crop_max_class_ratio=cfg.crop_max_class_ratio,
-        color_jitter_prob=cfg.color_jitter_prob,
-        color_jitter_brightness=cfg.color_jitter_brightness,
-        color_jitter_contrast=cfg.color_jitter_contrast,
-        color_jitter_saturation=cfg.color_jitter_saturation,
-        gaussian_blur_prob=cfg.gaussian_blur_prob,
-        gaussian_blur_radius_range=(cfg.gaussian_blur_radius_min, cfg.gaussian_blur_radius_max),
-    )
+def build_train_dataset(cfg: TrainConfig):
+    return build_dataset(cfg, split="train", training=True)
 
 
-def build_val_dataset(cfg: TrainConfig) -> CityscapesDataset:
-    return CityscapesDataset(
-        root=cfg.data_root,
-        split="val",
-        ignore_index=cfg.ignore_index,
-        training=False,
-    )
+def build_val_dataset(cfg: TrainConfig):
+    return build_dataset(cfg, split="val", training=False)
 
 
-def build_train_loader(train_ds: CityscapesDataset, cfg: TrainConfig, device: torch.device) -> DataLoader:
+def build_train_loader(train_ds, cfg: TrainConfig, device: torch.device) -> DataLoader:
     train_sampler = None
     train_shuffle = True
     if cfg.use_rare_class_sampler:
@@ -401,7 +378,7 @@ def build_train_loader(train_ds: CityscapesDataset, cfg: TrainConfig, device: to
     )
 
 
-def build_eval_loader(val_ds: CityscapesDataset, cfg: TrainConfig, device: torch.device) -> DataLoader:
+def build_eval_loader(val_ds, cfg: TrainConfig, device: torch.device) -> DataLoader:
     return DataLoader(
         val_ds,
         batch_size=cfg.batch_size,
@@ -412,6 +389,16 @@ def build_eval_loader(val_ds: CityscapesDataset, cfg: TrainConfig, device: torch
         prefetch_factor=(cfg.prefetch_factor if cfg.num_workers > 0 else None),
         drop_last=False,
     )
+
+
+def build_experiment_name(cfg: TrainConfig) -> str:
+    dataset_name = normalize_dataset_name(cfg.dataset_name)
+    exp_name = f"{dataset_name}_deeplabv3plus_{str(cfg.segmentation_head).lower()}"
+    if str(cfg.decoder_upsample_mode).lower() == "bilinear":
+        exp_name += "_bilinear"
+    if not bool(cfg.use_aux_loss):
+        exp_name += "_noaux"
+    return exp_name
 
 
 def build_teacher_model(cfg: TrainConfig) -> DeepLabV3Plus:
@@ -425,12 +412,13 @@ def build_teacher_model(cfg: TrainConfig) -> DeepLabV3Plus:
         ocr_mid_channels=cfg.ocr_mid_channels,
         ocr_key_channels=cfg.ocr_key_channels,
         ocr_dropout=cfg.ocr_dropout,
+        decoder_upsample_mode=cfg.decoder_upsample_mode,
         decoder_dropout=cfg.decoder_dropout,
     )
 
 
 def build_criterion(
-    train_ds: CityscapesDataset,
+    train_ds,
     cfg: TrainConfig,
     device: torch.device,
     loss_mode: str,
@@ -496,6 +484,8 @@ def build_optimizer(model: nn.Module, cfg: TrainConfig) -> torch.optim.Optimizer
 
 def main() -> None:
     cfg = TrainConfig()
+    apply_dataset_profile(cfg)
+    cfg.data_root = resolve_dataset_root(cfg)
     set_seed(cfg.seed)
 
     if torch.cuda.is_available():
@@ -507,20 +497,25 @@ def main() -> None:
     print(f"[INFO] device = {device}")
     amp_enabled = bool(cfg.use_amp and device.type == "cuda")
     print(f"[INFO] AMP enabled = {amp_enabled}")
+    print(f"[INFO] dataset_name = {cfg.dataset_name}")
+    print(f"[INFO] data_root = {cfg.data_root}")
     print(f"[INFO] segmentation_head = {cfg.segmentation_head}")
+    print(f"[INFO] decoder_upsample_mode = {cfg.decoder_upsample_mode}")
+    print(f"[INFO] use_aux_loss = {cfg.use_aux_loss}")
 
-    id2name = {idx: name for idx, name in enumerate(CITYSCAPES_19_CLASS_NAMES)}
-    id2color_vis = CITYSCAPES_19_ID2COLOR
+    train_ds = build_train_dataset(cfg)
+    cfg.num_classes = int(train_ds.meta.num_classes)
+    val_ds = build_val_dataset(cfg)
+    id2name = {idx: name for idx, name in enumerate(train_ds.meta.class_names)}
+    id2color_vis = list(train_ds.meta.id2color)
 
-    exp_name = f"cityscapes_deeplabv3plus_{str(cfg.segmentation_head).lower()}"
+    exp_name = build_experiment_name(cfg)
     out = OutputManager(cfg.outputs_root, exp_name=exp_name)
     out.save_config(cfg)
     out.init_metrics()
     print(f"[INFO] run_dir = {out.run_dir}")
 
-    train_ds = build_train_dataset(cfg)
     train_loader = build_train_loader(train_ds, cfg, device)
-    val_ds = build_val_dataset(cfg)
     val_loader = build_eval_loader(val_ds, cfg, device)
 
     model = build_teacher_model(cfg).to(device)

@@ -7,12 +7,18 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 @dataclass
 class TrainConfig:
     data_root: Path = PROJECT_ROOT / "data"
+    dataset_name: str = "cityscapes"  # "cityscapes" / "camvid" / "kitti_semantic" / "comma10k"
+    use_dataset_profile: bool = True  # True: apply dataset-specific num_classes and crop size defaults
+    cityscapes_root: Path = PROJECT_ROOT / "data" / "cityscapes"
+    camvid_root: Path = PROJECT_ROOT / "data" / "CamVid"
+    kitti_semantic_root: Path = PROJECT_ROOT / "data" / "KITTI_semantic"
+    comma10k_root: Path = PROJECT_ROOT / "data" / "comma10k"
 
     num_classes: int = 19
     ignore_index: int = 255
 
     # Base training
-    epochs: int = 200
+    epochs: int = 150
     batch_size: int = 8
     num_workers: int = 12
     persistent_workers: bool = True
@@ -58,14 +64,16 @@ class TrainConfig:
     ocr_mid_channels: int = 512
     ocr_key_channels: int = 256
     ocr_dropout: float = 0.05
+    decoder_upsample_mode: str = "learnable"  # "learnable" / "bilinear"
     decoder_dropout: float = 0.15
     aux_loss_weight: float = 0.4
+    use_aux_loss: bool = True
 
     # Augmentation
     crop_h: int = 769
     crop_w: int = 769
-    crop_retry: int = 10
-    crop_max_class_ratio: float = 0.70
+    crop_retry: int = 1   #10
+    crop_max_class_ratio: float = 1.0    #0.7
     train_multi_scale_min: float = 0.5
     train_multi_scale_max: float = 2.0
     hflip_prob: float = 0.5

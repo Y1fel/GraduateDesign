@@ -42,12 +42,21 @@ class DeepLabV3PlusDecoder(nn.Module):
         low_level_out_channels: int = 48,
         decoder_channels: int = 256,
         dropout: float = 0.1,
+        upsample_mode: str = "learnable",
     ):
         super().__init__()
+        self.upsample_mode = str(upsample_mode).lower()
+        if self.upsample_mode not in {"learnable", "bilinear"}:
+            raise ValueError(f"Unsupported upsample_mode: {upsample_mode}. Use 'learnable' or 'bilinear'.")
+
         self.low_reduce = ConvNormReLU(
             low_level_in_channels, low_level_out_channels, k=1
         )
-        self.aspp_upsample = LearnableUpsampleBlock(aspp_out_channels)
+        self.aspp_upsample = (
+            LearnableUpsampleBlock(aspp_out_channels)
+            if self.upsample_mode == "learnable"
+            else None
+        )
 
         in_ch = aspp_out_channels + low_level_out_channels
         self.refine = nn.Sequential(
@@ -59,7 +68,10 @@ class DeepLabV3PlusDecoder(nn.Module):
     def forward(self, low_level: torch.Tensor, aspp_feat: torch.Tensor):
         low = self.low_reduce(low_level)
         out_size = low.shape[-2:]
-        aspp_up = self.aspp_upsample(aspp_feat, out_size)
+        if self.aspp_upsample is None:
+            aspp_up = F.interpolate(aspp_feat, size=out_size, mode="bilinear", align_corners=False)
+        else:
+            aspp_up = self.aspp_upsample(aspp_feat, out_size)
 
         x = torch.cat([aspp_up, low], dim=1)
         return self.refine(x)

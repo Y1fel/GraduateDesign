@@ -23,6 +23,7 @@ class DeepLabV3Plus(nn.Module):
         ocr_mid_channels: int = 512,
         ocr_key_channels: int = 256,
         ocr_dropout: float = 0.05,
+        decoder_upsample_mode: str = "learnable",
     ):
         super().__init__()
         self.segmentation_head = str(segmentation_head).lower()
@@ -77,6 +78,7 @@ class DeepLabV3Plus(nn.Module):
             aspp_out_channels=head_out_channels,
             decoder_channels=decoder_channels,
             dropout=decoder_dropout,
+            upsample_mode=decoder_upsample_mode,
         )
 
         self.classifier = nn.Conv2d(decoder_channels, num_classes, kernel_size=1)
