@@ -7,12 +7,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 @dataclass
 class TrainConfig:
     data_root: Path = PROJECT_ROOT / "data"
-    dataset_name: str = "cityscapes"  # "cityscapes" / "camvid" / "kitti_semantic" / "comma10k"
+    dataset_name: str = "cityscapes"  # "cityscapes" / "camvid" / "kitti_semantic"
     use_dataset_profile: bool = True  # True: apply dataset-specific num_classes and crop size defaults
     cityscapes_root: Path = PROJECT_ROOT / "data" / "cityscapes"
     camvid_root: Path = PROJECT_ROOT / "data" / "CamVid"
     kitti_semantic_root: Path = PROJECT_ROOT / "data" / "KITTI_semantic"
-    comma10k_root: Path = PROJECT_ROOT / "data" / "comma10k"
 
     num_classes: int = 19
     ignore_index: int = 255
@@ -59,8 +58,16 @@ class TrainConfig:
     output_stride: int = 8
     backbone_pretrained: bool = True
     backbone_name: str = "rsnet-100"
-    segmentation_head: str = "aspp"  # "aspp" / "ocr"
+    segmentation_head: str = "hybrid"  # "aspp" / "hybrid" / "ocr"
     aspp_dropout: float = 0.05
+    hybrid_use_strip: bool = False
+    hybrid_strip_kernel: int = 11
+    hybrid_mid_kernel: int = 7
+    hybrid_large_kernel: int = 15
+    hybrid_gate_reduction: int = 16
+    hybrid_residual_channels: int = 128
+    hybrid_residual_init: float = 0.02
+    hybrid_dropout: float = 0.05
     ocr_mid_channels: int = 512
     ocr_key_channels: int = 256
     ocr_dropout: float = 0.05
@@ -115,7 +122,9 @@ class TrainConfig:
 
 @dataclass
 class MobileTrainConfig(TrainConfig):
-    epochs: int = 90
+    epochs: int = 150
+    decoder_upsample_mode: str = "bilinear"
+    use_aux_loss: bool = False
 
     color_jitter_prob: float = 0.5
     color_jitter_brightness: float = 0.2
@@ -128,7 +137,7 @@ class MobileTrainConfig(TrainConfig):
     class_weight_boost_factor: float = 1.1
     output_stride: int = 16
 
-    use_distillation: bool = True
+    use_distillation: bool = False
     distill_teacher_ckpt: Path = PROJECT_ROOT / "outputs" / "best.pth"
     distill_teacher_arch: str = "resnet"
     distill_teacher_backbone_name: str = "rsnet-100"

@@ -1,6 +1,5 @@
 from pathlib import Path
 
-from src.datasets.comma10k import Comma10KDataset
 from src.datasets.camvid import CamVidDataset
 from src.datasets.cityscapes import CityscapesDataset
 from src.datasets.kitti_semantic import KITTISemanticDataset
@@ -18,11 +17,9 @@ def normalize_dataset_name(name: str) -> str:
         "kitti_semantic": "kitti_semantic",
         "kitti-semantic": "kitti_semantic",
         "kitti": "kitti_semantic",
-        "comma10k": "comma10k",
-        "comma": "comma10k",
     }
     if normalized not in aliases:
-        raise ValueError(f"Unsupported dataset_name={name}. Use cityscapes/camvid/kitti_semantic/comma10k.")
+        raise ValueError(f"Unsupported dataset_name={name}. Use cityscapes/camvid/kitti_semantic.")
     return aliases[normalized]
 
 
@@ -51,13 +48,7 @@ def apply_dataset_profile(cfg) -> None:
         cfg.crop_w = 1024
         return
 
-    if dataset_name == "comma10k":
-        cfg.num_classes = 6
-        cfg.crop_h = 512
-        cfg.crop_w = 1024
-        return
-
-    raise ValueError(f"Unsupported dataset_name={dataset_name}. Use cityscapes/camvid/kitti_semantic/comma10k.")
+    raise ValueError(f"Unsupported dataset_name={dataset_name}. Use cityscapes/camvid/kitti_semantic.")
 
 
 def resolve_dataset_root(cfg) -> Path:
@@ -70,9 +61,7 @@ def resolve_dataset_root(cfg) -> Path:
         return Path(cfg.cityscapes_root)
     if dataset_name == "camvid":
         return Path(cfg.camvid_root)
-    if dataset_name == "kitti_semantic":
-        return Path(cfg.kitti_semantic_root)
-    return Path(cfg.comma10k_root)
+    return Path(cfg.kitti_semantic_root)
 
 
 def build_dataset(cfg, split: str, training: bool):
@@ -109,6 +98,4 @@ def build_dataset(cfg, split: str, training: bool):
         return CityscapesDataset(**common_kwargs, remap_to_19=True)
     if dataset_name == "camvid":
         return CamVidDataset(**common_kwargs)
-    if dataset_name == "kitti_semantic":
-        return KITTISemanticDataset(**common_kwargs)
-    return Comma10KDataset(**common_kwargs)
+    return KITTISemanticDataset(**common_kwargs)

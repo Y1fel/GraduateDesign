@@ -1,3 +1,0 @@
-python scripts/train_Cityscapes.py
-
-python -m scripts.train_CamVid

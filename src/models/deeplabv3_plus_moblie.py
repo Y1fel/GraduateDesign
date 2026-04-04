@@ -8,12 +8,12 @@ from src.models.decoder import DeepLabV3PlusDecoder
 
 
 class MobileNetV2Backbone(nn.Module):
-    def __init__(self, output_stride: int = 16):
+    def __init__(self, output_stride: int = 16, pretrained: bool = False):
         super().__init__()
         if output_stride not in (16, 32):
             raise ValueError("output_stride error")
 
-        backbone = MobileNetV2()
+        backbone = MobileNetV2(pretrained=pretrained)
         self.features = backbone.features
         self.output_stride = output_stride
 
@@ -42,6 +42,7 @@ class DeepLabV3PlusMobile(nn.Module):
         self,
         num_classes: int,
         output_stride: int = 16,
+        backbone_pretrained: bool = False,
         aspp_out_channels: int = 256,
         decoder_channels: int = 256,
         aspp_dropout: float = 0.1,
@@ -50,7 +51,10 @@ class DeepLabV3PlusMobile(nn.Module):
     ):
         super().__init__()
 
-        self.backbone = MobileNetV2Backbone(output_stride=output_stride)
+        self.backbone = MobileNetV2Backbone(
+            output_stride=output_stride,
+            pretrained=backbone_pretrained,
+        )
 
         rates = (6, 12, 18) if output_stride == 16 else (12, 24, 36)
         self.aspp = ASPP(

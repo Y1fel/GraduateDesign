@@ -117,8 +117,11 @@ class CamVidDataset(Dataset):
             raise RuntimeError(f"No CamVid images found in {self.images_root}")
 
     def _init_metadata(self) -> None:
-        class_dict_path = self.root / "class_dict.csv"
-        loaded = load_class_dict_csv(class_dict_path)
+        loaded = None
+        for csv_name in ("class_dict.csv", "class_palette.csv"):
+            loaded = load_class_dict_csv(self.root / csv_name)
+            if loaded is not None:
+                break
         if loaded is None:
             rows = CAMVID_LABELS
         else:

@@ -18,6 +18,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 def detect_teacher_segmentation_head(state: dict[str, torch.Tensor]) -> str:
+    if any(k.startswith("hybrid_neck.") for k in state.keys()):
+        return "hybrid"
     if any(k.startswith("ocr_pre.") or k.startswith("ocr_head.") for k in state.keys()):
         return "ocr"
     return "aspp"
@@ -49,6 +51,14 @@ def build_model(cfg: TrainConfig, ckpt_path: Path, device: torch.device, model_t
             output_stride=cfg.output_stride,
             segmentation_head=teacher_head,
             aspp_dropout=cfg.aspp_dropout,
+            hybrid_use_strip=cfg.hybrid_use_strip,
+            hybrid_strip_kernel=cfg.hybrid_strip_kernel,
+            hybrid_mid_kernel=cfg.hybrid_mid_kernel,
+            hybrid_large_kernel=cfg.hybrid_large_kernel,
+            hybrid_gate_reduction=cfg.hybrid_gate_reduction,
+            hybrid_residual_channels=cfg.hybrid_residual_channels,
+            hybrid_residual_init=cfg.hybrid_residual_init,
+            hybrid_dropout=cfg.hybrid_dropout,
             ocr_mid_channels=cfg.ocr_mid_channels,
             ocr_key_channels=cfg.ocr_key_channels,
             ocr_dropout=cfg.ocr_dropout,
@@ -60,6 +70,7 @@ def build_model(cfg: TrainConfig, ckpt_path: Path, device: torch.device, model_t
         model = DeepLabV3PlusMobile(
             num_classes=cfg.num_classes,
             output_stride=mobile_output_stride,
+            backbone_pretrained=False,
             aspp_dropout=cfg.aspp_dropout,
             decoder_upsample_mode=decoder_upsample_mode,
             decoder_dropout=cfg.decoder_dropout,

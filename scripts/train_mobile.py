@@ -172,6 +172,8 @@ def _detect_teacher_arch(state: dict[str, torch.Tensor], arch_cfg: str) -> str:
 
 
 def _detect_teacher_segmentation_head(state: dict[str, torch.Tensor]) -> str:
+    if any(k.startswith("hybrid_neck.") for k in state.keys()):
+        return "hybrid"
     if any(k.startswith("ocr_pre.") or k.startswith("ocr_head.") for k in state.keys()):
         return "ocr"
     return "aspp"
@@ -187,7 +189,12 @@ def _detect_decoder_upsample_mode(state: dict[str, torch.Tensor]) -> str:
 
 
 def _build_experiment_name(cfg: MobileTrainConfig) -> str:
-    exp_name = f"{normalize_dataset_name(cfg.dataset_name)}_deeplabv3plus_mobile_distill"
+    mode = "distill" if bool(cfg.use_distillation) else "baseline"
+    exp_name = f"{normalize_dataset_name(cfg.dataset_name)}_deeplabv3plus_mobile_{mode}"
+    if bool(cfg.use_distillation) and str(cfg.segmentation_head).lower() == "hybrid":
+        exp_name += "_large_v3"
+        if bool(cfg.hybrid_use_strip):
+            exp_name += "_strip"
     if str(cfg.decoder_upsample_mode).lower() == "bilinear":
         exp_name += "_bilinear"
     if not bool(cfg.use_aux_loss):
@@ -220,6 +227,14 @@ def _load_teacher_model(cfg: MobileTrainConfig, device: torch.device) -> nn.Modu
             output_stride=cfg.distill_teacher_output_stride,
             segmentation_head=teacher_head,
             aspp_dropout=cfg.aspp_dropout,
+            hybrid_use_strip=cfg.hybrid_use_strip,
+            hybrid_strip_kernel=cfg.hybrid_strip_kernel,
+            hybrid_mid_kernel=cfg.hybrid_mid_kernel,
+            hybrid_large_kernel=cfg.hybrid_large_kernel,
+            hybrid_gate_reduction=cfg.hybrid_gate_reduction,
+            hybrid_residual_channels=cfg.hybrid_residual_channels,
+            hybrid_residual_init=cfg.hybrid_residual_init,
+            hybrid_dropout=cfg.hybrid_dropout,
             ocr_mid_channels=cfg.ocr_mid_channels,
             ocr_key_channels=cfg.ocr_key_channels,
             ocr_dropout=cfg.ocr_dropout,
@@ -230,6 +245,7 @@ def _load_teacher_model(cfg: MobileTrainConfig, device: torch.device) -> nn.Modu
         teacher = DeepLabV3PlusMobile(
             num_classes=cfg.num_classes,
             output_stride=cfg.distill_teacher_output_stride,
+            backbone_pretrained=False,
             aspp_dropout=cfg.aspp_dropout,
             decoder_upsample_mode=teacher_decoder_upsample_mode,
             decoder_dropout=cfg.decoder_dropout,
@@ -518,7 +534,10 @@ def main() -> None:
     amp_enabled = bool(cfg.use_amp and device.type == "cuda")
     print(f"[INFO] device={device}, amp={amp_enabled}")
     print(f"[INFO] dataset_name={cfg.dataset_name}, data_root={cfg.data_root}")
-    print(f"[INFO] decoder_upsample_mode={cfg.decoder_upsample_mode}, use_aux_loss={cfg.use_aux_loss}")
+    print(
+        f"[INFO] decoder_upsample_mode={cfg.decoder_upsample_mode}, "
+        f"use_aux_loss={cfg.use_aux_loss}, backbone_pretrained={cfg.backbone_pretrained}"
+    )
     train_ds = build_dataset(cfg, split="train", training=True)
     cfg.num_classes = int(train_ds.meta.num_classes)
     val_ds = build_dataset(cfg, split="val", training=False)
@@ -556,6 +575,7 @@ def main() -> None:
     student = DeepLabV3PlusMobile(
         num_classes=cfg.num_classes,
         output_stride=cfg.output_stride,
+        backbone_pretrained=cfg.backbone_pretrained,
         aspp_dropout=cfg.aspp_dropout,
         decoder_upsample_mode=cfg.decoder_upsample_mode,
         decoder_dropout=cfg.decoder_dropout,

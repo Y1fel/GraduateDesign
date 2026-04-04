@@ -5,6 +5,7 @@ import torch.nn.functional as F
 from src.models.encoder import ResNetBackbone
 from src.models.aspp import ASPP
 from src.models.decoder import DeepLabV3PlusDecoder
+from src.models.hybrid_context import HybridContextNeck
 from src.models.ocr import ConvBNReLU, SpatialGatherModule, SpatialOCRModule
 
 
@@ -23,6 +24,14 @@ class DeepLabV3Plus(nn.Module):
         ocr_mid_channels: int = 512,
         ocr_key_channels: int = 256,
         ocr_dropout: float = 0.05,
+        hybrid_use_strip: bool = False,
+        hybrid_strip_kernel: int = 11,
+        hybrid_mid_kernel: int = 7,
+        hybrid_large_kernel: int = 15,
+        hybrid_gate_reduction: int = 16,
+        hybrid_residual_channels: int = 128,
+        hybrid_residual_init: float = 0.02,
+        hybrid_dropout: float = 0.05,
         decoder_upsample_mode: str = "learnable",
     ):
         super().__init__()
@@ -49,12 +58,34 @@ class DeepLabV3Plus(nn.Module):
                 dropout=aspp_dropout,
             )
             head_out_channels = aspp_out_channels
+            self.hybrid_neck = None
+            self.head = None
+            self.ocr_pre = None
+            self.ocr_gather = None
+            self.ocr_head = None
+        elif self.segmentation_head == "hybrid":
+            self.aspp = None
+            self.hybrid_neck = HybridContextNeck(
+                in_channels=self.backbone.out_channels,
+                out_channels=aspp_out_channels,
+                atrous_rates=rates,
+                use_strip=hybrid_use_strip,
+                strip_kernel=hybrid_strip_kernel,
+                mid_kernel=hybrid_mid_kernel,
+                large_kernel=hybrid_large_kernel,
+                gate_reduction=hybrid_gate_reduction,
+                residual_channels=hybrid_residual_channels,
+                residual_init=hybrid_residual_init,
+                dropout=hybrid_dropout,
+            )
+            head_out_channels = aspp_out_channels
             self.head = None
             self.ocr_pre = None
             self.ocr_gather = None
             self.ocr_head = None
         elif self.segmentation_head == "ocr":
             self.aspp = None
+            self.hybrid_neck = None
             self.head = None
             self.ocr_pre = ConvBNReLU(
                 self.backbone.out_channels,
@@ -71,7 +102,9 @@ class DeepLabV3Plus(nn.Module):
             )
             head_out_channels = ocr_mid_channels
         else:
-            raise ValueError(f"Unsupported segmentation_head: {segmentation_head}. Use 'aspp' or 'ocr'.")
+            raise ValueError(
+                f"Unsupported segmentation_head: {segmentation_head}. Use 'aspp', 'hybrid' or 'ocr'."
+            )
 
         self.decoder = DeepLabV3PlusDecoder(
             low_level_in_channels=self.backbone.low_level_channels,
@@ -100,6 +133,8 @@ class DeepLabV3Plus(nn.Module):
 
         if self.segmentation_head == "aspp":
             head_feat = self.aspp(high_level)
+        elif self.segmentation_head == "hybrid":
+            head_feat = self.hybrid_neck(high_level)
         else:
             ocr_feat = self.ocr_pre(high_level)
             ocr_context = self.ocr_gather(ocr_feat, aux_logits)

@@ -394,6 +394,10 @@ def build_eval_loader(val_ds, cfg: TrainConfig, device: torch.device) -> DataLoa
 def build_experiment_name(cfg: TrainConfig) -> str:
     dataset_name = normalize_dataset_name(cfg.dataset_name)
     exp_name = f"{dataset_name}_deeplabv3plus_{str(cfg.segmentation_head).lower()}"
+    if str(cfg.segmentation_head).lower() == "hybrid":
+        exp_name += "_large_v3"
+        if bool(cfg.hybrid_use_strip):
+            exp_name += "_strip"
     if str(cfg.decoder_upsample_mode).lower() == "bilinear":
         exp_name += "_bilinear"
     if not bool(cfg.use_aux_loss):
@@ -409,6 +413,14 @@ def build_teacher_model(cfg: TrainConfig) -> DeepLabV3Plus:
         output_stride=cfg.output_stride,
         segmentation_head=cfg.segmentation_head,
         aspp_dropout=cfg.aspp_dropout,
+        hybrid_use_strip=cfg.hybrid_use_strip,
+        hybrid_strip_kernel=cfg.hybrid_strip_kernel,
+        hybrid_mid_kernel=cfg.hybrid_mid_kernel,
+        hybrid_large_kernel=cfg.hybrid_large_kernel,
+        hybrid_gate_reduction=cfg.hybrid_gate_reduction,
+        hybrid_residual_channels=cfg.hybrid_residual_channels,
+        hybrid_residual_init=cfg.hybrid_residual_init,
+        hybrid_dropout=cfg.hybrid_dropout,
         ocr_mid_channels=cfg.ocr_mid_channels,
         ocr_key_channels=cfg.ocr_key_channels,
         ocr_dropout=cfg.ocr_dropout,
