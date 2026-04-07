@@ -178,6 +178,7 @@ class HybridContextNeck(nn.Module):
         in_channels: int,
         out_channels: int,
         atrous_rates: tuple[int, int, int],
+        variant: str = "large",
         use_strip: bool = False,
         strip_kernel: int = 11,
         mid_kernel: int = 7,
@@ -188,14 +189,17 @@ class HybridContextNeck(nn.Module):
         dropout: float = 0.05,
     ) -> None:
         super().__init__()
+        self.variant = str(variant).lower()
+        if self.variant not in {"large", "large_v3"}:
+            raise ValueError(f"Unsupported hybrid variant: {variant}. Use 'large' or 'large_v3'.")
         self.use_strip = bool(use_strip)
         if self.use_strip and strip_kernel % 2 == 0:
             raise ValueError(f"strip_kernel must be odd, got {strip_kernel}")
-        if mid_kernel % 2 == 0:
-            raise ValueError(f"mid_kernel must be odd, got {mid_kernel}")
         if large_kernel % 2 == 0:
             raise ValueError(f"large_kernel must be odd, got {large_kernel}")
-        if int(mid_kernel) >= int(large_kernel):
+        if self.variant == "large_v3" and mid_kernel % 2 == 0:
+            raise ValueError(f"mid_kernel must be odd, got {mid_kernel}")
+        if self.variant == "large_v3" and int(mid_kernel) >= int(large_kernel):
             raise ValueError(
                 f"mid_kernel must be smaller than large_kernel, got mid_kernel={mid_kernel}, large_kernel={large_kernel}"
             )
@@ -218,12 +222,16 @@ class HybridContextNeck(nn.Module):
             if self.use_strip
             else None
         )
-        self.mid_kernel_branch = LargeKernelContextBranch(
-            in_channels=out_channels,
-            hidden_channels=residual_channels,
-            out_channels=out_channels,
-            kernel_size=mid_kernel,
-            dropout=dropout,
+        self.mid_kernel_branch = (
+            LargeKernelContextBranch(
+                in_channels=out_channels,
+                hidden_channels=residual_channels,
+                out_channels=out_channels,
+                kernel_size=mid_kernel,
+                dropout=dropout,
+            )
+            if self.variant == "large_v3"
+            else None
         )
         self.large_kernel_branch = LargeKernelContextBranch(
             in_channels=out_channels,
@@ -233,11 +241,11 @@ class HybridContextNeck(nn.Module):
             dropout=dropout,
         )
         self.strip_gate = ChannelGate(out_channels, reduction=gate_reduction) if self.use_strip else None
-        self.mid_gate = ChannelGate(out_channels, reduction=gate_reduction)
+        self.mid_gate = ChannelGate(out_channels, reduction=gate_reduction) if self.variant == "large_v3" else None
         self.large_gate = ChannelGate(out_channels, reduction=gate_reduction)
         init_logit = _prob_to_logit(residual_init)
         self.strip_scale_logit = nn.Parameter(torch.tensor(init_logit)) if self.use_strip else None
-        self.mid_scale_logit = nn.Parameter(torch.tensor(init_logit))
+        self.mid_scale_logit = nn.Parameter(torch.tensor(init_logit)) if self.variant == "large_v3" else None
         self.large_scale_logit = nn.Parameter(torch.tensor(init_logit))
         self.refine = nn.Sequential(
             ConvBNReLU(out_channels, out_channels, kernel_size=1),
@@ -251,9 +259,11 @@ class HybridContextNeck(nn.Module):
             strip_feat = self.strip_gate(self.strip_branch(aspp_feat))
             strip_scale = torch.sigmoid(self.strip_scale_logit)
             enhanced = enhanced + strip_scale * strip_feat
-        mid_feat = self.mid_gate(self.mid_kernel_branch(aspp_feat))
         large_feat = self.large_gate(self.large_kernel_branch(aspp_feat))
-        mid_scale = torch.sigmoid(self.mid_scale_logit)
         large_scale = torch.sigmoid(self.large_scale_logit)
-        enhanced = enhanced + mid_scale * mid_feat + large_scale * large_feat
+        enhanced = enhanced + large_scale * large_feat
+        if self.mid_kernel_branch is not None and self.mid_gate is not None and self.mid_scale_logit is not None:
+            mid_feat = self.mid_gate(self.mid_kernel_branch(aspp_feat))
+            mid_scale = torch.sigmoid(self.mid_scale_logit)
+            enhanced = enhanced + mid_scale * mid_feat
         return self.refine(enhanced)

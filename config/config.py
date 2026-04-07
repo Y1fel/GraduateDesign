@@ -38,13 +38,13 @@ class TrainConfig:
 
     # Class-weight-related options
     label_smoothing: float = 0.0
-    use_class_weights: bool = False
+    use_class_weights: bool = True
     class_weight_strategy: str = "median_frequency"
     class_weight_power: float = 0.6
     class_weight_min: float = 0.8
     class_weight_max: float = 2.0
     class_weight_rare_cap: float = 2.2
-    class_weight_boost_low_iou_every: int = 100
+    class_weight_boost_low_iou_every: int = 1000000
     class_weight_boost_low_iou_threshold: float = 0.2
     class_weight_boost_factor: float = 1.05
 
@@ -60,21 +60,22 @@ class TrainConfig:
     backbone_name: str = "rsnet-100"
     segmentation_head: str = "hybrid"  # "aspp" / "hybrid" / "ocr"
     aspp_dropout: float = 0.05
+    hybrid_variant: str = "large"  # "large" / "large_v3"
     hybrid_use_strip: bool = False
     hybrid_strip_kernel: int = 11
     hybrid_mid_kernel: int = 7
-    hybrid_large_kernel: int = 15
+    hybrid_large_kernel: int = 9
     hybrid_gate_reduction: int = 16
     hybrid_residual_channels: int = 128
-    hybrid_residual_init: float = 0.02
+    hybrid_residual_init: float = 0.05
     hybrid_dropout: float = 0.05
     ocr_mid_channels: int = 512
     ocr_key_channels: int = 256
     ocr_dropout: float = 0.05
-    decoder_upsample_mode: str = "learnable"  # "learnable" / "bilinear"
+    decoder_upsample_mode: str = "bilinear"  # "learnable" / "bilinear"
     decoder_dropout: float = 0.15
     aux_loss_weight: float = 0.4
-    use_aux_loss: bool = True
+    use_aux_loss: bool = False
 
     # Augmentation
     crop_h: int = 769
@@ -126,6 +127,9 @@ class MobileTrainConfig(TrainConfig):
     decoder_upsample_mode: str = "bilinear"
     use_aux_loss: bool = False
 
+    train_multi_scale_min: float = 0.5
+    train_multi_scale_max: float = 2.0
+    hflip_prob: float = 0.5
     color_jitter_prob: float = 0.5
     color_jitter_brightness: float = 0.2
     color_jitter_contrast: float = 0.2
@@ -137,13 +141,13 @@ class MobileTrainConfig(TrainConfig):
     class_weight_boost_factor: float = 1.1
     output_stride: int = 16
 
-    use_distillation: bool = False
-    distill_teacher_ckpt: Path = PROJECT_ROOT / "outputs" / "best.pth"
+    use_distillation: bool = True
+    distill_teacher_ckpt: Path = PROJECT_ROOT / "outputs" / "Teacher_Full_preprocess_classweights" / "checkpoints" / "best.pth"
     distill_teacher_arch: str = "resnet"
     distill_teacher_backbone_name: str = "rsnet-100"
     distill_teacher_backbone_pretrained: bool = False
     distill_teacher_output_stride: int = 8
     distill_type: str = "cwd"  # "cwd" / "kl"
     distill_temperature: float = 4.0
-    distill_loss_weight: float = 0.7
+    distill_loss_weight: float = 0.5
     distill_aux_weight: float = 0.4

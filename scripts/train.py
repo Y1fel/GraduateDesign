@@ -395,7 +395,7 @@ def build_experiment_name(cfg: TrainConfig) -> str:
     dataset_name = normalize_dataset_name(cfg.dataset_name)
     exp_name = f"{dataset_name}_deeplabv3plus_{str(cfg.segmentation_head).lower()}"
     if str(cfg.segmentation_head).lower() == "hybrid":
-        exp_name += "_large_v3"
+        exp_name += f"_{str(cfg.hybrid_variant).lower()}"
         if bool(cfg.hybrid_use_strip):
             exp_name += "_strip"
     if str(cfg.decoder_upsample_mode).lower() == "bilinear":
@@ -413,6 +413,7 @@ def build_teacher_model(cfg: TrainConfig) -> DeepLabV3Plus:
         output_stride=cfg.output_stride,
         segmentation_head=cfg.segmentation_head,
         aspp_dropout=cfg.aspp_dropout,
+        hybrid_variant=cfg.hybrid_variant,
         hybrid_use_strip=cfg.hybrid_use_strip,
         hybrid_strip_kernel=cfg.hybrid_strip_kernel,
         hybrid_mid_kernel=cfg.hybrid_mid_kernel,

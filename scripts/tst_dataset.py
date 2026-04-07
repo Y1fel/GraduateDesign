@@ -25,6 +25,12 @@ def detect_teacher_segmentation_head(state: dict[str, torch.Tensor]) -> str:
     return "aspp"
 
 
+def detect_teacher_hybrid_variant(state: dict[str, torch.Tensor]) -> str:
+    if any(k.startswith("hybrid_neck.mid_kernel_branch.") or k == "hybrid_neck.mid_scale_logit" for k in state.keys()):
+        return "large_v3"
+    return "large"
+
+
 def detect_decoder_upsample_mode(state: dict[str, torch.Tensor]) -> str:
     if any(
         k.startswith("decoder.aspp_upsample.pre.") or k.startswith("decoder.aspp_upsample.post.")
@@ -44,6 +50,7 @@ def build_model(cfg: TrainConfig, ckpt_path: Path, device: torch.device, model_t
 
     if model_type == "teacher":
         teacher_head = detect_teacher_segmentation_head(state)
+        teacher_hybrid_variant = detect_teacher_hybrid_variant(state) if teacher_head == "hybrid" else "large"
         model = DeepLabV3Plus(
             num_classes=cfg.num_classes,
             backbone_pretrained=False,
@@ -51,6 +58,7 @@ def build_model(cfg: TrainConfig, ckpt_path: Path, device: torch.device, model_t
             output_stride=cfg.output_stride,
             segmentation_head=teacher_head,
             aspp_dropout=cfg.aspp_dropout,
+            hybrid_variant=teacher_hybrid_variant,
             hybrid_use_strip=cfg.hybrid_use_strip,
             hybrid_strip_kernel=cfg.hybrid_strip_kernel,
             hybrid_mid_kernel=cfg.hybrid_mid_kernel,

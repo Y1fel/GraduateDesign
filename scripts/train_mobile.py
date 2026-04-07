@@ -179,6 +179,12 @@ def _detect_teacher_segmentation_head(state: dict[str, torch.Tensor]) -> str:
     return "aspp"
 
 
+def _detect_teacher_hybrid_variant(state: dict[str, torch.Tensor]) -> str:
+    if any(k.startswith("hybrid_neck.mid_kernel_branch.") or k == "hybrid_neck.mid_scale_logit" for k in state.keys()):
+        return "large_v3"
+    return "large"
+
+
 def _detect_decoder_upsample_mode(state: dict[str, torch.Tensor]) -> str:
     if any(
         k.startswith("decoder.aspp_upsample.pre.") or k.startswith("decoder.aspp_upsample.post.")
@@ -191,8 +197,10 @@ def _detect_decoder_upsample_mode(state: dict[str, torch.Tensor]) -> str:
 def _build_experiment_name(cfg: MobileTrainConfig) -> str:
     mode = "distill" if bool(cfg.use_distillation) else "baseline"
     exp_name = f"{normalize_dataset_name(cfg.dataset_name)}_deeplabv3plus_mobile_{mode}"
+    if bool(cfg.use_distillation):
+        exp_name += f"_{str(cfg.distill_type).lower()}"
     if bool(cfg.use_distillation) and str(cfg.segmentation_head).lower() == "hybrid":
-        exp_name += "_large_v3"
+        exp_name += f"_{str(cfg.hybrid_variant).lower()}"
         if bool(cfg.hybrid_use_strip):
             exp_name += "_strip"
     if str(cfg.decoder_upsample_mode).lower() == "bilinear":
@@ -217,6 +225,7 @@ def _load_teacher_model(cfg: MobileTrainConfig, device: torch.device) -> nn.Modu
 
     teacher_arch = _detect_teacher_arch(state, str(cfg.distill_teacher_arch))
     teacher_head = _detect_teacher_segmentation_head(state)
+    teacher_hybrid_variant = _detect_teacher_hybrid_variant(state) if teacher_head == "hybrid" else "large"
     teacher_decoder_upsample_mode = _detect_decoder_upsample_mode(state)
 
     if teacher_arch == "resnet":
@@ -227,6 +236,7 @@ def _load_teacher_model(cfg: MobileTrainConfig, device: torch.device) -> nn.Modu
             output_stride=cfg.distill_teacher_output_stride,
             segmentation_head=teacher_head,
             aspp_dropout=cfg.aspp_dropout,
+            hybrid_variant=teacher_hybrid_variant,
             hybrid_use_strip=cfg.hybrid_use_strip,
             hybrid_strip_kernel=cfg.hybrid_strip_kernel,
             hybrid_mid_kernel=cfg.hybrid_mid_kernel,
@@ -495,18 +505,25 @@ def _append_loss_components(out: OutputManager, epoch: int, split: str, componen
     )
 
 
-def _maybe_save_vis(
+@torch.inference_mode()
+def save_vis_using_best_ckpt(
     model: nn.Module,
     val_loader: DataLoader,
     device: torch.device,
     out: OutputManager,
     cfg: MobileTrainConfig,
-    epoch: int,
     id2color,
+    epoch: int,
+    best_ckpt_path: Path,
 ) -> None:
-    if epoch % cfg.save_vis_every != 0:
-        return
-    print(f"[INFO] Saving visualizations at epoch={epoch}")
+    cur_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+
+    if best_ckpt_path.exists():
+        ckpt = torch.load(best_ckpt_path, map_location="cpu")
+        state = ckpt["model_state"] if isinstance(ckpt, dict) and "model_state" in ckpt else ckpt
+        model.load_state_dict(state, strict=True)
+
+    model.eval()
     save_predictions_triplet(
         model=model,
         loader=val_loader,
@@ -517,6 +534,7 @@ def _maybe_save_vis(
         epoch=epoch,
         max_items=cfg.save_vis_max_items,
     )
+    model.load_state_dict(cur_state, strict=True)
 
 
 def main() -> None:
@@ -602,6 +620,7 @@ def main() -> None:
     max_iter = cfg.epochs * len(train_loader)
 
     best_miou = -1.0
+    best_epoch = 0
     best_val_loss = float("inf")
     report_components = str(cfg.loss_mode).lower().replace("+", "_") in {"ohem", "ohem_boundary"}
 
@@ -700,17 +719,32 @@ def main() -> None:
             "best_val_loss": best_val_loss,
         }
 
-        if epoch % 10 == 0:
-            torch.save(ckpt, out.ckpt_dir / f"epoch_{epoch:03d}.pth")
-
         if (not math.isnan(val_miou)) and (val_miou > best_miou):
             best_miou = val_miou
+            best_epoch = epoch
             ckpt["best_miou"] = best_miou
             ckpt["best_val_loss"] = best_val_loss
             torch.save(ckpt, out.ckpt_dir / "best.pth")
-            print(f"[INFO] New best mIoU: {best_miou:.4f}")
+            print(f"[INFO] New best mIoU: {best_miou:.4f} (epoch={epoch:03d})")
 
-        _maybe_save_vis(student, val_loader, device, out, cfg, epoch, id2color_vis)
+    best_ckpt_path = out.ckpt_dir / "best.pth"
+    if best_ckpt_path.exists():
+        print(
+            "[INFO] Saving final visualizations with best.pth "
+            f"(best_epoch={best_epoch:03d}, save_epoch={cfg.epochs:03d}) ..."
+        )
+        save_vis_using_best_ckpt(
+            model=student,
+            val_loader=val_loader,
+            device=device,
+            out=out,
+            cfg=cfg,
+            id2color=id2color_vis,
+            epoch=int(cfg.epochs),
+            best_ckpt_path=best_ckpt_path,
+        )
+    else:
+        print("[WARN] best.pth not found, skipping final visualization export.")
 
     print("[DONE] Training completed.")
 
