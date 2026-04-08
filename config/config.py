@@ -38,7 +38,7 @@ class TrainConfig:
 
     # Class-weight-related options
     label_smoothing: float = 0.0
-    use_class_weights: bool = True
+    use_class_weights: bool = False
     class_weight_strategy: str = "median_frequency"
     class_weight_power: float = 0.6
     class_weight_min: float = 0.8
@@ -58,7 +58,7 @@ class TrainConfig:
     output_stride: int = 8
     backbone_pretrained: bool = True
     backbone_name: str = "rsnet-100"
-    segmentation_head: str = "hybrid"  # "aspp" / "hybrid" / "ocr"
+    segmentation_head: str = "hybrid"  # "aspp" / "hybrid"
     aspp_dropout: float = 0.05
     hybrid_variant: str = "large"  # "large" / "large_v3"
     hybrid_use_strip: bool = False
@@ -69,9 +69,6 @@ class TrainConfig:
     hybrid_residual_channels: int = 128
     hybrid_residual_init: float = 0.05
     hybrid_dropout: float = 0.05
-    ocr_mid_channels: int = 512
-    ocr_key_channels: int = 256
-    ocr_dropout: float = 0.05
     decoder_upsample_mode: str = "bilinear"  # "learnable" / "bilinear"
     decoder_dropout: float = 0.15
     aux_loss_weight: float = 0.4
@@ -123,7 +120,9 @@ class TrainConfig:
 
 @dataclass
 class MobileTrainConfig(TrainConfig):
-    epochs: int = 150
+    epochs: int = 180
+    lr_0: float = 0.01
+    backbone_pretrained: bool = False
     decoder_upsample_mode: str = "bilinear"
     use_aux_loss: bool = False
 
@@ -141,7 +140,7 @@ class MobileTrainConfig(TrainConfig):
     class_weight_boost_factor: float = 1.1
     output_stride: int = 16
 
-    use_distillation: bool = True
+    use_distillation: bool = False
     distill_teacher_ckpt: Path = PROJECT_ROOT / "outputs" / "Teacher_Full_preprocess_classweights" / "checkpoints" / "best.pth"
     distill_teacher_arch: str = "resnet"
     distill_teacher_backbone_name: str = "rsnet-100"

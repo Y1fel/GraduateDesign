@@ -186,7 +186,7 @@ class CityscapesDataset(Dataset):
 
         img_t = pil_to_tensor(img)
         img_t = normalize_img(img_t)
-        mask_t = torch.from_numpy(mask_new.astype(np.int64))
+        mask_t = torch.from_numpy(mask_new.astype(np.int64).copy()).clone()
 
         rel_name = str(img_path.relative_to(self.images_root))
         return img_t, mask_t, rel_name

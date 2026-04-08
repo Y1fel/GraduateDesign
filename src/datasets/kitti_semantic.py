@@ -122,8 +122,8 @@ class KITTISemanticDataset(Dataset):
         self.labels_root = _find_existing_dir(
             self.root,
             [
-                self.root / "training" / "semantic",
                 self.root / "training" / "semantic_rgb",
+                self.root / "training" / "semantic",
                 self.root / "training" / "semantics",
                 self.root / "train" / "semantic",
                 self.root / "labels" / "training",
@@ -166,6 +166,10 @@ class KITTISemanticDataset(Dataset):
 
     def load_mask_ids(self, mask_path: Path) -> np.ndarray:
         mask = Image.open(mask_path)
+        if mask.mode == "P":
+            rgb = np.asarray(mask.convert("RGB"), dtype=np.uint8)
+            return color_mask_to_id(rgb, self._cityscapes_color2id, ignore_index=self.ignore_index)
+
         arr = np.asarray(mask)
 
         if arr.ndim == 3:
@@ -174,11 +178,18 @@ class KITTISemanticDataset(Dataset):
         raw = np.asarray(mask.convert("L"), dtype=np.uint8)
         mapped = np.full(raw.shape, fill_value=self.ignore_index, dtype=np.uint8)
 
-        train_id_valid = raw < self.meta.num_classes
-        mapped[train_id_valid] = raw[train_id_valid]
+        # KITTI semantic grayscale labels may be stored either as Cityscapes raw IDs
+        # (0..33, 255 ignore) or already-converted train IDs (0..18, 255 ignore).
+        # Distinguish them at image level: if any pixel falls in 19..33, the whole mask
+        # should be treated as raw IDs and remapped through CITYSCAPES_34_TO_19.
+        has_cityscapes_raw_ids = bool(np.any((raw >= self.meta.num_classes) & (raw <= 33)))
 
-        city_valid = (raw <= 33) & (~train_id_valid)
-        mapped[city_valid] = self._cityscapes_34_to_19[raw[city_valid]]
+        if has_cityscapes_raw_ids:
+            city_valid = raw <= 33
+            mapped[city_valid] = self._cityscapes_34_to_19[raw[city_valid]]
+        else:
+            train_id_valid = raw < self.meta.num_classes
+            mapped[train_id_valid] = raw[train_id_valid]
 
         ignore_valid = raw == self.ignore_index
         mapped[ignore_valid] = self.ignore_index
@@ -257,6 +268,6 @@ class KITTISemanticDataset(Dataset):
 
         img_t = pil_to_tensor(img)
         img_t = normalize_img(img_t)
-        mask_t = torch.from_numpy(mask_new.astype(np.int64))
+        mask_t = torch.from_numpy(mask_new.astype(np.int64).copy()).clone()
         rel_name = str(img_path.relative_to(self.images_root))
         return img_t, mask_t, rel_name

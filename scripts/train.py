@@ -422,9 +422,6 @@ def build_teacher_model(cfg: TrainConfig) -> DeepLabV3Plus:
         hybrid_residual_channels=cfg.hybrid_residual_channels,
         hybrid_residual_init=cfg.hybrid_residual_init,
         hybrid_dropout=cfg.hybrid_dropout,
-        ocr_mid_channels=cfg.ocr_mid_channels,
-        ocr_key_channels=cfg.ocr_key_channels,
-        ocr_dropout=cfg.ocr_dropout,
         decoder_upsample_mode=cfg.decoder_upsample_mode,
         decoder_dropout=cfg.decoder_dropout,
     )

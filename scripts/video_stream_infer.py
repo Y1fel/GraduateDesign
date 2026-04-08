@@ -36,8 +36,6 @@ class FrameTask:
 def detect_teacher_segmentation_head(state: dict[str, torch.Tensor]) -> str:
     if any(k.startswith("hybrid_neck.") for k in state.keys()):
         return "hybrid"
-    if any(k.startswith("ocr_pre.") or k.startswith("ocr_head.") for k in state.keys()):
-        return "ocr"
     return "aspp"
 
 
@@ -83,9 +81,6 @@ def build_model(cfg: TrainConfig, ckpt_path: Path, device: torch.device, model_t
             hybrid_residual_channels=cfg.hybrid_residual_channels,
             hybrid_residual_init=cfg.hybrid_residual_init,
             hybrid_dropout=cfg.hybrid_dropout,
-            ocr_mid_channels=cfg.ocr_mid_channels,
-            ocr_key_channels=cfg.ocr_key_channels,
-            ocr_dropout=cfg.ocr_dropout,
             decoder_upsample_mode=decoder_upsample_mode,
             decoder_dropout=cfg.decoder_dropout,
         )
