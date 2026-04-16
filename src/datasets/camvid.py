@@ -3,7 +3,7 @@ from typing import Optional, Tuple
 
 import numpy as np
 import torch
-from PIL import Image
+from PIL import Image, ImageFile, UnidentifiedImageError
 from torch.utils.data import Dataset
 
 from src.datasets.camvid_labels import CAMVID_IGNORE_LABEL_NAMES, CAMVID_LABELS
@@ -17,6 +17,9 @@ from src.datasets.transforms import (
     random_scale_pair,
 )
 from src.utils.Id2Mask import color_mask_to_id, load_class_dict_csv
+
+
+ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 
 def _normalize_label_name(name: str) -> str:
@@ -41,6 +44,53 @@ def _find_existing_dir(root: Path, candidates: list[Path]) -> Optional[Path]:
         if candidate.exists():
             return candidate
     return None
+
+
+def _load_pil_image_with_fallback(path: Path, mode: str = "RGB") -> Image.Image:
+    try:
+        with Image.open(path) as img:
+            return img.convert(mode)
+    except (UnidentifiedImageError, OSError, ValueError) as pil_exc:
+        try:
+            import cv2
+        except Exception as cv_import_exc:
+            raise RuntimeError(
+                f"Failed to load image file: {path}. PIL error: {pil_exc}. "
+                f"OpenCV fallback unavailable: {cv_import_exc}"
+            ) from pil_exc
+
+        raw = np.fromfile(path, dtype=np.uint8)
+        if raw.size == 0:
+            raise RuntimeError(f"Failed to load image file: {path}. File is empty or unreadable.") from pil_exc
+        arr = cv2.imdecode(raw, cv2.IMREAD_COLOR)
+        if arr is None:
+            raise RuntimeError(f"Failed to load image file: {path}. PIL and OpenCV both could not decode it.") from pil_exc
+        arr = cv2.cvtColor(arr, cv2.COLOR_BGR2RGB)
+        return Image.fromarray(arr).convert(mode)
+
+
+def _load_mask_array_with_fallback(path: Path) -> np.ndarray:
+    try:
+        with Image.open(path) as mask:
+            return np.asarray(mask)
+    except (UnidentifiedImageError, OSError, ValueError) as pil_exc:
+        try:
+            import cv2
+        except Exception as cv_import_exc:
+            raise RuntimeError(
+                f"Failed to load mask file: {path}. PIL error: {pil_exc}. "
+                f"OpenCV fallback unavailable: {cv_import_exc}"
+            ) from pil_exc
+
+        raw = np.fromfile(path, dtype=np.uint8)
+        if raw.size == 0:
+            raise RuntimeError(f"Failed to load mask file: {path}. File is empty or unreadable.") from pil_exc
+        arr = cv2.imdecode(raw, cv2.IMREAD_UNCHANGED)
+        if arr is None:
+            raise RuntimeError(f"Failed to load mask file: {path}. PIL and OpenCV both could not decode it.") from pil_exc
+        if arr.ndim == 3 and arr.shape[2] >= 3:
+            arr = cv2.cvtColor(arr[:, :, :3], cv2.COLOR_BGR2RGB)
+        return arr
 
 
 class CamVidDataset(Dataset):
@@ -190,13 +240,12 @@ class CamVidDataset(Dataset):
         return mask_path
 
     def load_mask_ids(self, mask_path: Path) -> np.ndarray:
-        mask = Image.open(mask_path)
-        arr = np.asarray(mask)
+        arr = _load_mask_array_with_fallback(mask_path)
 
         if arr.ndim == 3:
             return color_mask_to_id(arr, self._color2id, ignore_index=self.ignore_index)
 
-        mask_id = np.asarray(mask.convert("L"), dtype=np.int64)
+        mask_id = np.asarray(arr, dtype=np.int64)
         mapped = np.full(mask_id.shape, fill_value=self.ignore_index, dtype=np.uint8)
         valid = (mask_id >= 0) & (mask_id < len(self._raw_id_to_train_id))
         mapped[valid] = self._raw_id_to_train_id[mask_id[valid]].astype(np.uint8)
@@ -205,7 +254,7 @@ class CamVidDataset(Dataset):
     def __getitem__(self, idx: int):
         img_path = self.img_paths[idx]
 
-        img = Image.open(img_path).convert("RGB")
+        img = _load_pil_image_with_fallback(img_path, mode="RGB")
         if self.labels_root is None:
             mask_new = np.full((img.height, img.width), fill_value=self.ignore_index, dtype=np.uint8)
         else:

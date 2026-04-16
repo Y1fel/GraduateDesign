@@ -83,6 +83,8 @@ class DeepLabV3Plus(nn.Module):
             dropout=decoder_dropout,
             upsample_mode=decoder_upsample_mode,
         )
+        self.distill_context_channels = int(aspp_out_channels)
+        self.distill_decoder_channels = int(decoder_channels)
 
         self.classifier = nn.Conv2d(decoder_channels, num_classes, kernel_size=1)
         self.aux_classifier = nn.Conv2d(self.backbone.out_channels, num_classes, kernel_size=1)
@@ -95,23 +97,60 @@ class DeepLabV3Plus(nn.Module):
         if self.aux_classifier.bias is not None:
             nn.init.constant_(self.aux_classifier.bias, 0.0)
 
-    def forward(self, x: torch.Tensor, return_aux: bool = False):
+    def forward(
+        self,
+        x: torch.Tensor,
+        return_aux: bool = False,
+        return_preupsample: bool = False,
+        return_features: bool = False,
+    ):
         input_size = x.shape[-2:]
 
         low_level, _, high_level = self.backbone(x)
         aux_logits = self.aux_classifier(high_level)
+        aux_logits_preupsample = aux_logits
 
         if self.segmentation_head == "aspp":
             head_feat = self.aspp(high_level)
+            context_base = head_feat
+            context_residual = torch.zeros_like(head_feat)
         else:
-            head_feat = self.hybrid_neck(high_level)
+            if return_features:
+                head_feat, context_meta = self.hybrid_neck(high_level, return_intermediates=True)
+                context_base = context_meta["context_base"]
+                context_residual = context_meta["context_residual"]
+            else:
+                head_feat = self.hybrid_neck(high_level)
+                context_base = head_feat
+                context_residual = torch.zeros_like(head_feat)
 
         dec_feat = self.decoder(low_level, head_feat)
         logits = self.classifier(dec_feat)
-        logits = F.interpolate(logits, size=input_size, mode="bilinear", align_corners=False)
+        logits_preupsample = logits
+        logits = F.interpolate(logits_preupsample, size=input_size, mode="bilinear", align_corners=False)
+        features = {
+            "context": head_feat,
+            "context_base": context_base,
+            "context_residual": context_residual,
+            "decoder": dec_feat,
+            "high_level": high_level,
+            "low_level": low_level,
+        }
 
         if not return_aux:
+            if return_preupsample:
+                if return_features:
+                    return logits, logits_preupsample, features
+                return logits, logits_preupsample
+            if return_features:
+                return logits, features
             return logits
 
-        aux_logits = F.interpolate(aux_logits, size=input_size, mode="bilinear", align_corners=False)
+        aux_logits = F.interpolate(aux_logits_preupsample, size=input_size, mode="bilinear", align_corners=False)
+        if return_preupsample:
+            if return_features:
+                return logits, aux_logits, logits_preupsample, aux_logits_preupsample, features
+            return logits, aux_logits, logits_preupsample, aux_logits_preupsample
+        if return_features:
+            return logits, aux_logits, features
         return logits, aux_logits

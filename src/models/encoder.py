@@ -52,18 +52,33 @@ class ResNetBackbone(nn.Module):
 
         self.out_channels = 2048
         self.low_level_channels = 256
+        self.stem_channels = 64
+        self.mid_level_channels = 512
+        self.high_mid_channels = 1024
 
-    def forward(self, x: torch.Tensor):
+    def forward_features(self, x: torch.Tensor) -> dict[str, torch.Tensor]:
         x = self.conv1(x)
         x = self.bn1(x)
-        x = self.relu(x)
-        x = self.maxpool(x)
+        stem = self.relu(x)
+        x = self.maxpool(stem)
 
         x1 = self.layer1(x)
-        low_level = x1                      
-
-        x2 = self.layer2(x1)                      
+        x2 = self.layer2(x1)
         x3 = self.layer3(x2)
-        x4 = self.layer4(x3)                         
+        x4 = self.layer4(x3)
+
+        return {
+            "stem": stem,
+            "layer1": x1,
+            "layer2": x2,
+            "layer3": x3,
+            "layer4": x4,
+        }
+
+    def forward(self, x: torch.Tensor):
+        features = self.forward_features(x)
+        low_level = features["layer1"]
+        x2 = features["layer2"]
+        x4 = features["layer4"]
 
         return low_level, x2, x4

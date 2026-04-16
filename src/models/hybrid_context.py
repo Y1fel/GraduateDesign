@@ -252,18 +252,37 @@ class HybridContextNeck(nn.Module):
             nn.Dropout2d(p=float(dropout)),
         )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        x: torch.Tensor,
+        return_intermediates: bool = False,
+    ) -> torch.Tensor | tuple[torch.Tensor, dict[str, torch.Tensor]]:
         aspp_feat = self.aspp(x)
         enhanced = aspp_feat
+        residual = torch.zeros_like(aspp_feat)
         if self.strip_branch is not None and self.strip_gate is not None and self.strip_scale_logit is not None:
             strip_feat = self.strip_gate(self.strip_branch(aspp_feat))
             strip_scale = torch.sigmoid(self.strip_scale_logit)
-            enhanced = enhanced + strip_scale * strip_feat
+            strip_delta = strip_scale * strip_feat
+            enhanced = enhanced + strip_delta
+            residual = residual + strip_delta
         large_feat = self.large_gate(self.large_kernel_branch(aspp_feat))
         large_scale = torch.sigmoid(self.large_scale_logit)
-        enhanced = enhanced + large_scale * large_feat
+        large_delta = large_scale * large_feat
+        enhanced = enhanced + large_delta
+        residual = residual + large_delta
         if self.mid_kernel_branch is not None and self.mid_gate is not None and self.mid_scale_logit is not None:
             mid_feat = self.mid_gate(self.mid_kernel_branch(aspp_feat))
             mid_scale = torch.sigmoid(self.mid_scale_logit)
-            enhanced = enhanced + mid_scale * mid_feat
-        return self.refine(enhanced)
+            mid_delta = mid_scale * mid_feat
+            enhanced = enhanced + mid_delta
+            residual = residual + mid_delta
+
+        refined = self.refine(enhanced)
+        if return_intermediates:
+            return refined, {
+                "context_base": aspp_feat,
+                "context_enhanced": enhanced,
+                "context_residual": residual,
+            }
+        return refined

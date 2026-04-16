@@ -19,6 +19,7 @@ class TrainConfig:
     # Base training
     epochs: int = 150
     batch_size: int = 8
+    eval_batch_size: int | None = None
     num_workers: int = 12
     persistent_workers: bool = True
     prefetch_factor: int = 4
@@ -55,10 +56,11 @@ class TrainConfig:
     sampler_num_samples_factor: float = 1.0
 
     # Model
+    model_name: str = "deeplabv3plus"  # "deeplabv3plus" / "unet" / "pspnet" / "fcn"
     output_stride: int = 8
     backbone_pretrained: bool = True
     backbone_name: str = "rsnet-100"
-    segmentation_head: str = "hybrid"  # "aspp" / "hybrid"
+    segmentation_head: str = "aspp"  # "aspp" / "hybrid"
     aspp_dropout: float = 0.05
     hybrid_variant: str = "large"  # "large" / "large_v3"
     hybrid_use_strip: bool = False
@@ -120,9 +122,10 @@ class TrainConfig:
 
 @dataclass
 class MobileTrainConfig(TrainConfig):
-    epochs: int = 180
+    epochs: int = 150
     lr_0: float = 0.01
-    backbone_pretrained: bool = False
+    backbone_pretrained: bool = True
+    use_class_weights: bool = True
     decoder_upsample_mode: str = "bilinear"
     use_aux_loss: bool = False
 
@@ -140,13 +143,22 @@ class MobileTrainConfig(TrainConfig):
     class_weight_boost_factor: float = 1.1
     output_stride: int = 16
 
-    use_distillation: bool = False
+    use_distillation: bool = True
     distill_teacher_ckpt: Path = PROJECT_ROOT / "outputs" / "Teacher_Full_preprocess_classweights" / "checkpoints" / "best.pth"
     distill_teacher_arch: str = "resnet"
     distill_teacher_backbone_name: str = "rsnet-100"
     distill_teacher_backbone_pretrained: bool = False
     distill_teacher_output_stride: int = 8
-    distill_type: str = "cwd"  # "cwd" / "kl"
+    distill_type: str = "feature_cwd_residual"  # "feature" / "kl" / "cwd" / "feature_kl" / "feature_cwd" / "feature_cwd_residual"
+    distill_start_epoch: int = 10
+    distill_ramp_epochs: int = 10
     distill_temperature: float = 4.0
-    distill_loss_weight: float = 0.5
+    distill_loss_weight: float = 0.4
     distill_aux_weight: float = 0.4
+    distill_use_preupsample: bool = True
+    feature_distill_level: str = "context"  # "context" / "decoder"
+    feature_distill_weight: float = 0.15
+    feature_distill_cosine_weight: float = 0.25
+    residual_distill_weight: float = 0.10
+    residual_distill_boundary_boost: float = 2.0
+    residual_distill_boundary_kernel: int = 5

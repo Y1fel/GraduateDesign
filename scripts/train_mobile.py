@@ -192,19 +192,82 @@ def _detect_decoder_upsample_mode(state: dict[str, torch.Tensor]) -> str:
     return "bilinear"
 
 
+def _normalize_distill_type(distill_type: str) -> str:
+    return str(distill_type).lower().replace("+", "_").replace("-", "_")
+
+
+def _uses_feature_distill(cfg: MobileTrainConfig) -> bool:
+    tokens = set(_normalize_distill_type(cfg.distill_type).split("_"))
+    return "feature" in tokens or "feat" in tokens
+
+
+def _uses_residual_distill(cfg: MobileTrainConfig) -> bool:
+    tokens = set(_normalize_distill_type(cfg.distill_type).split("_"))
+    return "residual" in tokens or "res" in tokens
+
+
+def _resolve_logit_distill_type(cfg: MobileTrainConfig) -> str | None:
+    tokens = set(_normalize_distill_type(cfg.distill_type).split("_"))
+    if "cwd" in tokens:
+        return "cwd"
+    if "kl" in tokens:
+        return "kl"
+    return None
+
+
+def _compute_distill_scale(epoch: int, cfg: MobileTrainConfig) -> float:
+    start_epoch = max(int(cfg.distill_start_epoch), 1)
+    if epoch < start_epoch:
+        return 0.0
+    ramp_epochs = max(int(cfg.distill_ramp_epochs), 1)
+    progress = float(epoch - start_epoch + 1) / float(ramp_epochs)
+    return min(max(progress, 0.0), 1.0)
+
+
+class FeatureDistillProjector(nn.Module):
+    def __init__(self, in_channels: int, out_channels: int) -> None:
+        super().__init__()
+        if int(in_channels) == int(out_channels):
+            self.proj = nn.Identity()
+        else:
+            self.proj = nn.Conv2d(int(in_channels), int(out_channels), kernel_size=1, bias=False)
+            nn.init.kaiming_normal_(self.proj.weight, mode="fan_out", nonlinearity="relu")
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.proj(x)
+
+
+class ResidualDistillHead(nn.Module):
+    def __init__(self, channels: int) -> None:
+        super().__init__()
+        ch = int(channels)
+        self.block = nn.Sequential(
+            nn.Conv2d(ch, ch, kernel_size=3, padding=1, groups=ch, bias=False),
+            nn.BatchNorm2d(ch),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(ch, ch, kernel_size=1, bias=False),
+        )
+        nn.init.kaiming_normal_(self.block[0].weight, mode="fan_out", nonlinearity="relu")
+        nn.init.zeros_(self.block[3].weight)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.block(x)
+
+
 def _build_experiment_name(cfg: MobileTrainConfig) -> str:
+    pretrain_tag = "pretrained" if bool(cfg.backbone_pretrained) else "scratch"
     mode = "distill" if bool(cfg.use_distillation) else "baseline"
-    exp_name = f"{normalize_dataset_name(cfg.dataset_name)}_deeplabv3plus_mobile_{mode}"
+    exp_name = f"{normalize_dataset_name(cfg.dataset_name)}_deeplabv3plus_mobile_{pretrain_tag}_{mode}"
     if bool(cfg.use_distillation):
         exp_name += f"_{str(cfg.distill_type).lower()}"
-    if bool(cfg.use_distillation) and str(cfg.segmentation_head).lower() == "hybrid":
-        exp_name += f"_{str(cfg.hybrid_variant).lower()}"
-        if bool(cfg.hybrid_use_strip):
-            exp_name += "_strip"
     if str(cfg.decoder_upsample_mode).lower() == "bilinear":
         exp_name += "_bilinear"
     if not bool(cfg.use_aux_loss):
         exp_name += "_noaux"
+    exp_name += "_cw" if bool(cfg.use_class_weights) else "_nocw"
+    exp_tag = getattr(cfg, "exp_tag", "")
+    if exp_tag:
+        exp_name += f"_{str(exp_tag).lower()}"
     return exp_name
 
 
@@ -270,7 +333,51 @@ def _load_teacher_model(cfg: MobileTrainConfig, device: torch.device) -> nn.Modu
     return teacher
 
 
-def _distill_loss(student_logits: torch.Tensor, teacher_logits: torch.Tensor, cfg: MobileTrainConfig) -> torch.Tensor:
+def _build_feature_projector(
+    student_model: nn.Module,
+    teacher_model: nn.Module | None,
+    cfg: MobileTrainConfig,
+    device: torch.device,
+) -> nn.Module | None:
+    if teacher_model is None or not _uses_feature_distill(cfg):
+        return None
+
+    level = str(cfg.feature_distill_level).lower()
+    if level not in {"context", "decoder"}:
+        raise ValueError(f"Unsupported feature_distill_level={cfg.feature_distill_level}. Use context/decoder")
+
+    channel_attr = "distill_context_channels" if level == "context" else "distill_decoder_channels"
+    student_channels = getattr(student_model, channel_attr, None)
+    teacher_channels = getattr(teacher_model, channel_attr, None)
+    if student_channels is None or teacher_channels is None:
+        raise AttributeError(f"Model missing {channel_attr}, cannot build feature distillation projector")
+
+    return FeatureDistillProjector(student_channels, teacher_channels).to(device)
+
+
+def _build_residual_head(
+    teacher_model: nn.Module | None,
+    cfg: MobileTrainConfig,
+    device: torch.device,
+) -> nn.Module | None:
+    if teacher_model is None or not _uses_residual_distill(cfg):
+        return None
+
+    if str(cfg.feature_distill_level).lower() != "context":
+        raise ValueError("Residual distillation currently supports feature_distill_level='context' only")
+
+    teacher_channels = getattr(teacher_model, "distill_context_channels", None)
+    if teacher_channels is None:
+        raise AttributeError("Teacher model missing distill_context_channels, cannot build residual head")
+    return ResidualDistillHead(teacher_channels).to(device)
+
+
+def _distill_loss(
+    student_logits: torch.Tensor,
+    teacher_logits: torch.Tensor,
+    distill_type: str,
+    cfg: MobileTrainConfig,
+) -> torch.Tensor:
     t = float(cfg.distill_temperature)
     if t <= 0:
         raise ValueError("distill_temperature must be positive")
@@ -283,21 +390,169 @@ def _distill_loss(student_logits: torch.Tensor, teacher_logits: torch.Tensor, cf
             align_corners=False,
         )
 
-    distill_type = str(cfg.distill_type).lower()
     if distill_type == "kl":
-        s_log_prob = F.log_softmax(student_logits / t, dim=1)
-        t_prob = F.softmax(teacher_logits / t, dim=1)
-        return F.kl_div(s_log_prob, t_prob, reduction="batchmean") * (t * t)
+        s_log_prob = F.log_softmax(student_logits.float() / t, dim=1)
+        t_prob = F.softmax(teacher_logits.float() / t, dim=1)
+        normalizer = max(
+            int(student_logits.shape[0] * student_logits.shape[-2] * student_logits.shape[-1]),
+            1,
+        )
+        return F.kl_div(s_log_prob, t_prob, reduction="sum") * (t * t) / normalizer
 
     if distill_type == "cwd":
         n, c, _, _ = student_logits.shape
-        s = student_logits.reshape(n, c, -1)
-        te = teacher_logits.reshape(n, c, -1)
+        s = student_logits.float().reshape(n, c, -1)
+        te = teacher_logits.float().reshape(n, c, -1)
         s_log_prob = F.log_softmax(s / t, dim=-1)
         t_prob = F.softmax(te / t, dim=-1)
         return F.kl_div(s_log_prob, t_prob, reduction="none").sum(dim=-1).mean() * (t * t)
 
-    raise ValueError(f"Unsupported distill_type={cfg.distill_type}. Use cwd/kl")
+    raise ValueError(f"Unsupported logit distill_type={distill_type}. Use cwd/kl")
+
+
+def _select_feature_for_distill(
+    features: dict[str, torch.Tensor] | None,
+    cfg: MobileTrainConfig,
+) -> torch.Tensor | None:
+    if features is None:
+        return None
+    level = str(cfg.feature_distill_level).lower()
+    if level not in features:
+        raise KeyError(f"Feature map '{level}' not found in model outputs")
+    return features[level]
+
+
+def _select_teacher_residual_for_distill(features: dict[str, torch.Tensor] | None) -> torch.Tensor | None:
+    if features is None:
+        return None
+    return features.get("context_residual")
+
+
+def _project_student_feature(
+    student_feature: torch.Tensor,
+    projector: nn.Module | None,
+) -> torch.Tensor:
+    student_feature = student_feature.float()
+    if projector is not None:
+        student_feature = projector(student_feature)
+    return student_feature
+
+
+def _feature_distill_loss(
+    aligned_student_feature: torch.Tensor,
+    teacher_feature: torch.Tensor,
+    cfg: MobileTrainConfig,
+) -> torch.Tensor:
+    teacher_feature = teacher_feature.detach().float()
+
+    if teacher_feature.shape[-2:] != aligned_student_feature.shape[-2:]:
+        teacher_feature = F.interpolate(
+            teacher_feature,
+            size=aligned_student_feature.shape[-2:],
+            mode="bilinear",
+            align_corners=False,
+        )
+
+    # Normalize feature maps first so the teacher's larger activation scale does not dominate the loss.
+    student_norm = F.normalize(aligned_student_feature, p=2, dim=1, eps=1e-6)
+    teacher_norm = F.normalize(teacher_feature, p=2, dim=1, eps=1e-6)
+    mse = F.mse_loss(student_norm, teacher_norm)
+
+    student_vec = student_norm.flatten(1)
+    teacher_vec = teacher_norm.flatten(1)
+    cosine = 1.0 - F.cosine_similarity(student_vec, teacher_vec, dim=1, eps=1e-6).mean()
+    return mse + float(cfg.feature_distill_cosine_weight) * cosine
+
+
+def _build_boundary_mask(
+    target: torch.Tensor,
+    out_size: tuple[int, int],
+    cfg: MobileTrainConfig,
+) -> torch.Tensor:
+    mask = target.unsqueeze(1)
+    valid = mask != int(cfg.ignore_index)
+    safe = torch.where(valid, mask, torch.zeros_like(mask))
+
+    boundary = torch.zeros_like(safe, dtype=torch.float32)
+    diff_h = (safe[:, :, 1:, :] != safe[:, :, :-1, :]) & valid[:, :, 1:, :] & valid[:, :, :-1, :]
+    diff_w = (safe[:, :, :, 1:] != safe[:, :, :, :-1]) & valid[:, :, :, 1:] & valid[:, :, :, :-1]
+
+    boundary[:, :, 1:, :] = torch.maximum(boundary[:, :, 1:, :], diff_h.float())
+    boundary[:, :, :-1, :] = torch.maximum(boundary[:, :, :-1, :], diff_h.float())
+    boundary[:, :, :, 1:] = torch.maximum(boundary[:, :, :, 1:], diff_w.float())
+    boundary[:, :, :, :-1] = torch.maximum(boundary[:, :, :, :-1], diff_w.float())
+
+    kernel_size = max(int(cfg.residual_distill_boundary_kernel), 1)
+    if kernel_size > 1:
+        boundary = F.max_pool2d(boundary, kernel_size=kernel_size, stride=1, padding=kernel_size // 2)
+
+    if boundary.shape[-2:] != out_size:
+        boundary = F.interpolate(boundary, size=out_size, mode="nearest")
+    return boundary
+
+
+def _residual_distill_loss(
+    aligned_student_feature: torch.Tensor,
+    teacher_residual: torch.Tensor,
+    residual_head: nn.Module,
+    target: torch.Tensor,
+    cfg: MobileTrainConfig,
+) -> torch.Tensor:
+    if residual_head is None:
+        raise ValueError("residual_head must be provided when residual distillation is enabled")
+
+    teacher_residual = teacher_residual.detach().float()
+    if teacher_residual.shape[-2:] != aligned_student_feature.shape[-2:]:
+        teacher_residual = F.interpolate(
+            teacher_residual,
+            size=aligned_student_feature.shape[-2:],
+            mode="bilinear",
+            align_corners=False,
+        )
+
+    pred_residual = residual_head(aligned_student_feature.float())
+    pred_norm = F.normalize(pred_residual, p=2, dim=1, eps=1e-6)
+    teacher_norm = F.normalize(teacher_residual, p=2, dim=1, eps=1e-6)
+    per_pixel = (pred_norm - teacher_norm).pow(2).mean(dim=1, keepdim=True)
+
+    boundary_mask = _build_boundary_mask(target, pred_norm.shape[-2:], cfg)
+    weight_map = 1.0 + float(cfg.residual_distill_boundary_boost) * boundary_mask
+    return (per_pixel * weight_map).mean()
+
+
+def _forward_with_optional_preupsample(
+    model: nn.Module,
+    imgs: torch.Tensor,
+    use_preupsample: bool,
+    return_features: bool,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, dict[str, torch.Tensor] | None]:
+    if use_preupsample and return_features:
+        main_logits, aux_logits, main_distill, aux_distill, features = model(
+            imgs,
+            return_aux=True,
+            return_preupsample=True,
+            return_features=True,
+        )
+        return main_logits, aux_logits, main_distill, aux_distill, features
+
+    if use_preupsample:
+        main_logits, aux_logits, main_distill, aux_distill = model(
+            imgs,
+            return_aux=True,
+            return_preupsample=True,
+        )
+        return main_logits, aux_logits, main_distill, aux_distill, None
+
+    if return_features:
+        main_logits, aux_logits, features = model(
+            imgs,
+            return_aux=True,
+            return_features=True,
+        )
+        return main_logits, aux_logits, main_logits, aux_logits, features
+
+    main_logits, aux_logits = model(imgs, return_aux=True)
+    return main_logits, aux_logits, main_logits, aux_logits, None
 
 
 def _compute_total_loss(
@@ -306,8 +561,17 @@ def _compute_total_loss(
     target: torch.Tensor,
     criterion: nn.Module,
     cfg: MobileTrainConfig,
+    distill_scale: float = 1.0,
+    logit_distill_type: str | None = None,
+    distill_student_main: torch.Tensor | None = None,
+    distill_student_aux: torch.Tensor | None = None,
     teacher_main: torch.Tensor | None = None,
     teacher_aux: torch.Tensor | None = None,
+    student_feature: torch.Tensor | None = None,
+    teacher_feature: torch.Tensor | None = None,
+    teacher_residual: torch.Tensor | None = None,
+    feature_projector: nn.Module | None = None,
+    residual_head: nn.Module | None = None,
     return_components: bool = False,
 ) -> tuple[torch.Tensor, dict[str, float] | None]:
     if return_components:
@@ -327,19 +591,43 @@ def _compute_total_loss(
         components["main"] = float(main_loss.detach())
         components["aux"] = float(aux_loss.detach())
 
-    if teacher_main is not None and teacher_aux is not None:
-        kd_main = _distill_loss(student_main, teacher_main, cfg)
+    aligned_student_feature = None
+    if student_feature is not None:
+        aligned_student_feature = _project_student_feature(student_feature, feature_projector)
+
+    if teacher_main is not None and teacher_aux is not None and logit_distill_type is not None:
+        kd_student_main = distill_student_main if distill_student_main is not None else student_main
+        kd_student_aux = distill_student_aux if distill_student_aux is not None else student_aux
+        kd_main = _distill_loss(kd_student_main, teacher_main, logit_distill_type, cfg)
         if cfg.use_aux_loss:
-            kd_aux = _distill_loss(student_aux, teacher_aux, cfg)
+            kd_aux = _distill_loss(kd_student_aux, teacher_aux, logit_distill_type, cfg)
             kd_total = kd_main + float(cfg.distill_aux_weight) * kd_aux
         else:
             kd_aux = student_main.new_tensor(0.0)
             kd_total = kd_main
-        total = total + float(cfg.distill_loss_weight) * kd_total
+        total = total + float(distill_scale) * float(cfg.distill_loss_weight) * kd_total
         if components is not None:
             components["kd_main"] = float(kd_main.detach())
             components["kd_aux"] = float(kd_aux.detach())
             components["kd_total"] = float(kd_total.detach())
+
+    if aligned_student_feature is not None and teacher_feature is not None:
+        feature_loss = _feature_distill_loss(aligned_student_feature, teacher_feature, cfg)
+        total = total + float(distill_scale) * float(cfg.feature_distill_weight) * feature_loss
+        if components is not None:
+            components["feature"] = float(feature_loss.detach())
+
+    if aligned_student_feature is not None and teacher_residual is not None and residual_head is not None:
+        residual_loss = _residual_distill_loss(
+            aligned_student_feature=aligned_student_feature,
+            teacher_residual=teacher_residual,
+            residual_head=residual_head,
+            target=target,
+            cfg=cfg,
+        )
+        total = total + float(distill_scale) * float(cfg.residual_distill_weight) * residual_loss
+        if components is not None:
+            components["residual"] = float(residual_loss.detach())
 
     if components is not None:
         components["total"] = float(total.detach())
@@ -357,11 +645,17 @@ def train_one_epoch(
     epoch: int,
     max_iter: int,
     teacher_model: nn.Module | None,
+    feature_projector: nn.Module | None,
+    residual_head: nn.Module | None,
     return_loss_components: bool,
 ) -> dict:
     model.train()
     if cfg.freeze_bn:
         freeze_bn(model)
+    if feature_projector is not None:
+        feature_projector.train()
+    if residual_head is not None:
+        residual_head.train()
 
     scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
     pred_hist = torch.zeros(cfg.num_classes, dtype=torch.int64, device=device)
@@ -386,12 +680,29 @@ def train_one_epoch(
         optimizer.zero_grad(set_to_none=True)
 
         with torch.amp.autocast("cuda", enabled=use_amp):
-            student_main, student_aux = model(imgs, return_aux=True)
+            distill_scale = _compute_distill_scale(epoch, cfg) if teacher_model is not None else 0.0
+            logit_distill_type = _resolve_logit_distill_type(cfg) if distill_scale > 0.0 else None
+            use_feature_distill = bool(distill_scale > 0.0 and _uses_feature_distill(cfg))
+            use_residual_distill = bool(distill_scale > 0.0 and _uses_residual_distill(cfg))
+            request_features = bool(use_feature_distill or use_residual_distill)
+            use_preupsample = bool(logit_distill_type is not None and cfg.distill_use_preupsample)
+            student_main, student_aux, student_main_distill, student_aux_distill, student_features = _forward_with_optional_preupsample(
+                model,
+                imgs,
+                use_preupsample=use_preupsample,
+                return_features=request_features,
+            )
             teacher_main = None
             teacher_aux = None
-            if teacher_model is not None:
+            teacher_features = None
+            if teacher_model is not None and distill_scale > 0.0:
                 with torch.no_grad():
-                    teacher_main, teacher_aux = teacher_model(imgs, return_aux=True)
+                    _, _, teacher_main, teacher_aux, teacher_features = _forward_with_optional_preupsample(
+                        teacher_model,
+                        imgs,
+                        use_preupsample=use_preupsample,
+                        return_features=request_features,
+                    )
 
             loss, loss_components = _compute_total_loss(
                 student_main=student_main,
@@ -399,8 +710,17 @@ def train_one_epoch(
                 target=masks,
                 criterion=criterion,
                 cfg=cfg,
+                distill_scale=distill_scale,
+                logit_distill_type=logit_distill_type,
+                distill_student_main=student_main_distill,
+                distill_student_aux=student_aux_distill,
                 teacher_main=teacher_main,
                 teacher_aux=teacher_aux,
+                student_feature=_select_feature_for_distill(student_features, cfg) if request_features else None,
+                teacher_feature=_select_feature_for_distill(teacher_features, cfg) if use_feature_distill else None,
+                teacher_residual=_select_teacher_residual_for_distill(teacher_features) if use_residual_distill else None,
+                feature_projector=feature_projector,
+                residual_head=residual_head,
                 return_components=return_loss_components,
             )
 
@@ -532,8 +852,7 @@ def save_vis_using_best_ckpt(
     model.load_state_dict(cur_state, strict=True)
 
 
-def main() -> None:
-    cfg = MobileTrainConfig()
+def run_training(cfg: MobileTrainConfig) -> Path:
     apply_dataset_profile(cfg)
     cfg.data_root = resolve_dataset_root(cfg)
     set_seed(cfg.seed)
@@ -595,17 +914,54 @@ def main() -> None:
     ).to(device)
 
     teacher = _load_teacher_model(cfg, device)
+    feature_projector = _build_feature_projector(student, teacher, cfg, device)
+    residual_head = _build_residual_head(teacher, cfg, device)
     if teacher is not None:
+        distill_parts = [
+            f"type={cfg.distill_type}",
+            f"start_epoch={cfg.distill_start_epoch}",
+            f"ramp_epochs={cfg.distill_ramp_epochs}",
+        ]
+        logit_distill_type = _resolve_logit_distill_type(cfg)
+        if logit_distill_type is not None:
+            distill_parts.extend([
+                f"T={cfg.distill_temperature}",
+                f"logit_w={cfg.distill_loss_weight}",
+                f"aux_w={cfg.distill_aux_weight}",
+            ])
+        if _uses_feature_distill(cfg):
+            distill_parts.extend([
+                f"feature={cfg.feature_distill_level}",
+                f"feature_w={cfg.feature_distill_weight}",
+                f"feature_cos_w={cfg.feature_distill_cosine_weight}",
+            ])
+        if _uses_residual_distill(cfg):
+            distill_parts.extend([
+                f"residual_w={cfg.residual_distill_weight}",
+                f"boundary_boost={cfg.residual_distill_boundary_boost}",
+                f"boundary_kernel={cfg.residual_distill_boundary_kernel}",
+            ])
         print(
-            f"[INFO] Distillation enabled: type={cfg.distill_type}, T={cfg.distill_temperature}, "
-            f"loss_w={cfg.distill_loss_weight}, aux_w={cfg.distill_aux_weight}"
+            "[INFO] Distillation enabled: " + ", ".join(distill_parts)
         )
+        if (
+            isinstance(feature_projector, FeatureDistillProjector)
+            and not isinstance(feature_projector.proj, nn.Identity)
+        ):
+            print("[INFO] Feature projector enabled for student/teacher channel alignment.")
+        if residual_head is not None:
+            print("[INFO] Residual distillation head enabled (training-only module).")
 
     class_weights = _compute_class_weights(train_ds, cfg).to(device) if cfg.use_class_weights else None
     criterion = _build_criterion(cfg, class_weights, device)
 
+    trainable_params = list(student.parameters())
+    if feature_projector is not None:
+        trainable_params.extend([p for p in feature_projector.parameters() if p.requires_grad])
+    if residual_head is not None:
+        trainable_params.extend([p for p in residual_head.parameters() if p.requires_grad])
     optimizer = torch.optim.SGD(
-        student.parameters(),
+        trainable_params,
         lr=cfg.lr_0,
         momentum=0.9,
         weight_decay=cfg.weight_decay,
@@ -617,7 +973,10 @@ def main() -> None:
     best_miou = -1.0
     best_epoch = 0
     best_val_loss = float("inf")
-    report_components = str(cfg.loss_mode).lower().replace("+", "_") in {"ohem", "ohem_boundary"}
+    loss_mode = str(cfg.loss_mode).lower().replace("+", "_")
+    report_components = loss_mode in {"ce", "ohem", "ohem_boundary"} and (
+        bool(cfg.use_distillation) or loss_mode in {"ohem", "ohem_boundary"}
+    )
 
     for epoch in range(1, cfg.epochs + 1):
         t0 = time.time()
@@ -635,6 +994,8 @@ def main() -> None:
             epoch=epoch,
             max_iter=max_iter,
             teacher_model=teacher,
+            feature_projector=feature_projector,
+            residual_head=residual_head,
             return_loss_components=report_components,
         )
 
@@ -672,6 +1033,14 @@ def main() -> None:
             f"data_t={train_stats['avg_data_time']:.3f}s iter_t={train_stats['avg_compute_time']:.3f}s "
             f"grad_norm={train_stats['avg_grad_norm']:.4f} time={dt:.1f}s"
         )
+        if train_stats["loss_components"] is not None:
+            comp = train_stats["loss_components"]
+            comp_parts = []
+            for key in ("main", "aux", "kd_total", "feature", "residual", "total"):
+                if key in comp:
+                    comp_parts.append(f"{key}={comp[key]:.4f}")
+            if comp_parts:
+                print("[TRAIN-LOSS] " + " ".join(comp_parts))
         print(f"[TRAIN-PRED-HIST] counts={pred_hist.tolist()}")
         print(f"[TRAIN-PRED-HIST] dominant_class={dominant_class} dominant_ratio={dominant_ratio:.4f}")
         if dominant_ratio >= float(cfg.dominant_class_warn_ratio):
@@ -713,6 +1082,14 @@ def main() -> None:
             "best_miou": best_miou,
             "best_val_loss": best_val_loss,
         }
+        if feature_projector is not None:
+            projector_state = feature_projector.state_dict()
+            if projector_state:
+                ckpt["feature_projector_state"] = projector_state
+        if residual_head is not None:
+            residual_state = residual_head.state_dict()
+            if residual_state:
+                ckpt["residual_head_state"] = residual_state
 
         if (not math.isnan(val_miou)) and (val_miou > best_miou):
             best_miou = val_miou
@@ -742,6 +1119,12 @@ def main() -> None:
         print("[WARN] best.pth not found, skipping final visualization export.")
 
     print("[DONE] Training completed.")
+    return out.run_dir
+
+
+def main() -> None:
+    cfg = MobileTrainConfig()
+    run_training(cfg)
 
 
 if __name__ == "__main__":

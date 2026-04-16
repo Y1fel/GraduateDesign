@@ -12,7 +12,7 @@ from src.commom.output_manager import OutputManager
 from src.commom.repro import set_seed
 from src.datasets.factory import apply_dataset_profile, build_dataset, normalize_dataset_name, resolve_dataset_root
 from src.eval.mIoU import compute_segmentation_metrics
-from src.models.deeplabv3_plus import DeepLabV3Plus
+from src.models.factory import build_segmentation_model, normalize_model_name
 from src.viz.visualizer import save_predictions_triplet
 from config.config import TrainConfig
 from src.losses.combined_loss import CrossEntropySegLoss, CombinedCEFocalLoss, OHEMBoundaryLoss, OHEMCELoss
@@ -379,9 +379,10 @@ def build_train_loader(train_ds, cfg: TrainConfig, device: torch.device) -> Data
 
 
 def build_eval_loader(val_ds, cfg: TrainConfig, device: torch.device) -> DataLoader:
+    eval_batch_size = int(cfg.eval_batch_size) if getattr(cfg, "eval_batch_size", None) is not None else int(cfg.batch_size)
     return DataLoader(
         val_ds,
-        batch_size=cfg.batch_size,
+        batch_size=eval_batch_size,
         shuffle=False,
         num_workers=cfg.num_workers,
         pin_memory=(device.type == "cuda"),
@@ -393,38 +394,31 @@ def build_eval_loader(val_ds, cfg: TrainConfig, device: torch.device) -> DataLoa
 
 def build_experiment_name(cfg: TrainConfig) -> str:
     dataset_name = normalize_dataset_name(cfg.dataset_name)
-    exp_name = f"{dataset_name}_deeplabv3plus_{str(cfg.segmentation_head).lower()}"
-    if str(cfg.segmentation_head).lower() == "hybrid":
-        exp_name += f"_{str(cfg.hybrid_variant).lower()}"
-        if bool(cfg.hybrid_use_strip):
-            exp_name += "_strip"
-    if str(cfg.decoder_upsample_mode).lower() == "bilinear":
+    model_name = normalize_model_name(getattr(cfg, "model_name", "deeplabv3plus"))
+
+    if model_name == "deeplabv3plus":
+        exp_name = f"{dataset_name}_deeplabv3plus_{str(cfg.segmentation_head).lower()}"
+        if str(cfg.segmentation_head).lower() == "hybrid":
+            exp_name += f"_{str(cfg.hybrid_variant).lower()}"
+            if bool(cfg.hybrid_use_strip):
+                exp_name += "_strip"
+    else:
+        exp_name = f"{dataset_name}_{model_name}"
+        exp_name += f"_{str(cfg.backbone_name).lower().replace('_', '-')}"
+        if bool(cfg.backbone_pretrained):
+            exp_name += "_pretrained"
+    if model_name == "deeplabv3plus" and str(cfg.decoder_upsample_mode).lower() == "bilinear":
         exp_name += "_bilinear"
     if not bool(cfg.use_aux_loss):
         exp_name += "_noaux"
+    exp_tag = getattr(cfg, "exp_tag", "")
+    if exp_tag:
+        exp_name += f"_{str(exp_tag).lower()}"
     return exp_name
 
 
-def build_teacher_model(cfg: TrainConfig) -> DeepLabV3Plus:
-    return DeepLabV3Plus(
-        num_classes=cfg.num_classes,
-        backbone_pretrained=cfg.backbone_pretrained,
-        backbone_name=cfg.backbone_name,
-        output_stride=cfg.output_stride,
-        segmentation_head=cfg.segmentation_head,
-        aspp_dropout=cfg.aspp_dropout,
-        hybrid_variant=cfg.hybrid_variant,
-        hybrid_use_strip=cfg.hybrid_use_strip,
-        hybrid_strip_kernel=cfg.hybrid_strip_kernel,
-        hybrid_mid_kernel=cfg.hybrid_mid_kernel,
-        hybrid_large_kernel=cfg.hybrid_large_kernel,
-        hybrid_gate_reduction=cfg.hybrid_gate_reduction,
-        hybrid_residual_channels=cfg.hybrid_residual_channels,
-        hybrid_residual_init=cfg.hybrid_residual_init,
-        hybrid_dropout=cfg.hybrid_dropout,
-        decoder_upsample_mode=cfg.decoder_upsample_mode,
-        decoder_dropout=cfg.decoder_dropout,
-    )
+def build_teacher_model(cfg: TrainConfig):
+    return build_segmentation_model(cfg)
 
 
 def build_criterion(
@@ -492,8 +486,7 @@ def build_optimizer(model: nn.Module, cfg: TrainConfig) -> torch.optim.Optimizer
     return optimizer
 
 
-def main() -> None:
-    cfg = TrainConfig()
+def run_training(cfg: TrainConfig) -> Path:
     apply_dataset_profile(cfg)
     cfg.data_root = resolve_dataset_root(cfg)
     set_seed(cfg.seed)
@@ -508,6 +501,7 @@ def main() -> None:
     amp_enabled = bool(cfg.use_amp and device.type == "cuda")
     print(f"[INFO] AMP enabled = {amp_enabled}")
     print(f"[INFO] dataset_name = {cfg.dataset_name}")
+    print(f"[INFO] model_name = {normalize_model_name(cfg.model_name)}")
     print(f"[INFO] data_root = {cfg.data_root}")
     print(f"[INFO] segmentation_head = {cfg.segmentation_head}")
     print(f"[INFO] decoder_upsample_mode = {cfg.decoder_upsample_mode}")
@@ -754,6 +748,12 @@ def main() -> None:
         print("[WARN] best.pth not found, skipping final visualization export.")
 
     print("[DONE] Training finished.")
+    return out.run_dir
+
+
+def main() -> None:
+    cfg = TrainConfig()
+    run_training(cfg)
 
 
 if __name__ == "__main__":
