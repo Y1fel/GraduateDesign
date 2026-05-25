@@ -421,10 +421,6 @@ class VideoInferGUI(tk.Tk):
         self.worker: StreamInferenceWorker | None = None
         self.preview_photo: ImageTk.PhotoImage | None = None
         self.last_run_dir: Path | None = None
-        self.preview_tabs: ttk.Notebook | None = None
-        self.live_preview_tab: ttk.Frame | None = None
-        self.sketch_canvas: tk.Canvas | None = None
-        self.sketch_last_point: tuple[int, int] | None = None
 
         self.log_queue: queue.Queue = queue.Queue()
         self.preview_queue: queue.Queue = queue.Queue(maxsize=1)
@@ -613,22 +609,8 @@ class VideoInferGUI(tk.Tk):
         frame.columnconfigure(0, weight=1)
         frame.rowconfigure(0, weight=1)
 
-        self.preview_tabs = ttk.Notebook(frame)
-        self.preview_tabs.grid(row=0, column=0, sticky="nsew")
-
-        preview_tab = ttk.Frame(self.preview_tabs)
-        preview_tab.columnconfigure(0, weight=1)
-        preview_tab.rowconfigure(0, weight=1)
-        self.preview_tabs.add(preview_tab, text="Live Preview")
-        self.live_preview_tab = preview_tab
-
-        sketch_tab = ttk.Frame(self.preview_tabs)
-        sketch_tab.columnconfigure(0, weight=1)
-        sketch_tab.rowconfigure(0, weight=1)
-        self.preview_tabs.add(sketch_tab, text="Sketch Pad")
-
         self.preview_label = tk.Label(
-            preview_tab,
+            frame,
             text="No output yet",
             anchor="center",
             background="#111111",
@@ -636,28 +618,12 @@ class VideoInferGUI(tk.Tk):
         )
         self.preview_label.grid(row=0, column=0, sticky="nsew")
 
-        self.sketch_canvas = tk.Canvas(
-            sketch_tab,
-            background="#fbfcfe",
-            highlightthickness=0,
-            cursor="pencil",
-        )
-        self.sketch_canvas.grid(row=0, column=0, sticky="nsew")
-        self.sketch_canvas.bind("<ButtonPress-1>", self._on_sketch_press)
-        self.sketch_canvas.bind("<B1-Motion>", self._on_sketch_drag)
-        self.sketch_canvas.bind("<ButtonRelease-1>", self._on_sketch_release)
-
         preview_controls = ttk.Frame(frame)
         preview_controls.grid(row=1, column=0, sticky="ew", pady=(8, 0))
         preview_controls.columnconfigure(0, weight=1)
 
         ttk.Label(preview_controls, textvariable=self.status_text_var).grid(row=0, column=0, sticky="w")
-        ttk.Button(preview_controls, text="Clear sketch", command=self._clear_sketch).grid(row=0, column=1, padx=(8, 0))
-        ttk.Button(preview_controls, text="Draw demo", command=self._draw_demo_sketch).grid(row=0, column=2, padx=(8, 0))
-        ttk.Button(preview_controls, text="Open run dir", command=self._open_last_run_dir).grid(row=0, column=3, padx=(8, 0))
-
-        self._draw_demo_sketch()
-        self.preview_tabs.select(sketch_tab)
+        ttk.Button(preview_controls, text="Open run dir", command=self._open_last_run_dir).grid(row=0, column=1, padx=(8, 0))
 
     def _build_log_panel(self, parent: ttk.Frame) -> None:
         frame = ttk.LabelFrame(parent, text="Logs", padding=10)
@@ -831,174 +797,6 @@ class VideoInferGUI(tk.Tk):
         self.preview_photo = None
         self.preview_label.configure(image="", text="No output yet")
 
-    def _clear_sketch(self) -> None:
-        if self.sketch_canvas is None:
-            return
-        self.sketch_canvas.delete("all")
-        self.sketch_last_point = None
-        width = max(self.sketch_canvas.winfo_width(), 640)
-        height = max(self.sketch_canvas.winfo_height(), 480)
-        self.sketch_canvas.create_text(
-            width / 2,
-            height / 2,
-            text="Drag with the left mouse button to draw here",
-            fill="#6b7280",
-            font=("Segoe UI", 16),
-            tags=("hint",),
-        )
-
-    def _draw_demo_sketch(self) -> None:
-        if self.sketch_canvas is None:
-            return
-
-        canvas = self.sketch_canvas
-        canvas.delete("all")
-        self.sketch_last_point = None
-
-        width = max(canvas.winfo_width(), 900)
-        height = max(canvas.winfo_height(), 600)
-
-        canvas.create_rectangle(0, 0, width, height, fill="#f8fbff", outline="")
-        canvas.create_rectangle(0, height * 0.68, width, height, fill="#d9f99d", outline="")
-        canvas.create_oval(
-            width * 0.74,
-            height * 0.08,
-            width * 0.88,
-            height * 0.23,
-            fill="#fbbf24",
-            outline="#f59e0b",
-            width=3,
-        )
-        canvas.create_polygon(
-            0,
-            height * 0.70,
-            width * 0.18,
-            height * 0.35,
-            width * 0.36,
-            height * 0.70,
-            fill="#93c5fd",
-            outline="#60a5fa",
-            width=3,
-        )
-        canvas.create_polygon(
-            width * 0.22,
-            height * 0.70,
-            width * 0.46,
-            height * 0.28,
-            width * 0.70,
-            height * 0.70,
-            fill="#60a5fa",
-            outline="#3b82f6",
-            width=3,
-        )
-        canvas.create_polygon(
-            width * 0.56,
-            height * 0.70,
-            width * 0.82,
-            height * 0.40,
-            width,
-            height * 0.70,
-            fill="#3b82f6",
-            outline="#2563eb",
-            width=3,
-        )
-        canvas.create_polygon(
-            width * 0.42,
-            height,
-            width * 0.48,
-            height * 0.68,
-            width * 0.52,
-            height * 0.68,
-            width * 0.58,
-            height,
-            fill="#4b5563",
-            outline="#374151",
-            width=2,
-        )
-        canvas.create_line(
-            width * 0.5,
-            height * 0.68,
-            width * 0.5,
-            height * 0.90,
-            fill="#f9fafb",
-            width=6,
-            dash=(10, 14),
-        )
-        canvas.create_rectangle(
-            width * 0.16,
-            height * 0.56,
-            width * 0.30,
-            height * 0.69,
-            fill="#fef3c7",
-            outline="#d97706",
-            width=3,
-        )
-        canvas.create_polygon(
-            width * 0.14,
-            height * 0.56,
-            width * 0.23,
-            height * 0.46,
-            width * 0.32,
-            height * 0.56,
-            fill="#ef4444",
-            outline="#b91c1c",
-            width=3,
-        )
-        canvas.create_rectangle(
-            width * 0.215,
-            height * 0.61,
-            width * 0.245,
-            height * 0.69,
-            fill="#93c5fd",
-            outline="#1d4ed8",
-            width=2,
-        )
-        canvas.create_text(
-            width * 0.08,
-            height * 0.10,
-            anchor="w",
-            text="Sketch Pad",
-            fill="#0f172a",
-            font=("Segoe UI Semibold", 24),
-        )
-        canvas.create_text(
-            width * 0.08,
-            height * 0.16,
-            anchor="w",
-            text="You can keep this demo or draw over it.",
-            fill="#475569",
-            font=("Segoe UI", 14),
-        )
-
-    def _on_sketch_press(self, event: tk.Event) -> None:
-        if self.sketch_canvas is None:
-            return
-        self.sketch_canvas.delete("hint")
-        self.sketch_last_point = (event.x, event.y)
-
-    def _on_sketch_drag(self, event: tk.Event) -> None:
-        if self.sketch_canvas is None:
-            return
-        if self.sketch_last_point is None:
-            self.sketch_last_point = (event.x, event.y)
-            return
-
-        x0, y0 = self.sketch_last_point
-        self.sketch_canvas.create_line(
-            x0,
-            y0,
-            event.x,
-            event.y,
-            fill="#111827",
-            width=4,
-            capstyle=tk.ROUND,
-            smooth=True,
-        )
-        self.sketch_last_point = (event.x, event.y)
-
-    def _on_sketch_release(self, event: tk.Event) -> None:
-        self.sketch_last_point = None
-
     def _set_controls_for_running(self) -> None:
         self.start_button.state(["disabled"])
         self.stop_button.state(["!disabled"])
@@ -1071,8 +869,6 @@ class VideoInferGUI(tk.Tk):
         image.thumbnail((1240, 780), RESAMPLING_LANCZOS)
         self.preview_photo = ImageTk.PhotoImage(image)
         self.preview_label.configure(image=self.preview_photo, text="")
-        if self.preview_tabs is not None and self.live_preview_tab is not None:
-            self.preview_tabs.select(self.live_preview_tab)
 
     def _drain_status(self) -> None:
         latest = None

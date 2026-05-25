@@ -96,6 +96,7 @@ class TrainConfig:
     save_vis_every: int = 20
     save_vis_max_items: int = 10
     outputs_root: Path = PROJECT_ROOT / "outputs"
+    exp_tag: str = ""
 
     # Loss mode:
     # - "ce": plain cross entropy

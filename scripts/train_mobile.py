@@ -1122,8 +1122,28 @@ def run_training(cfg: MobileTrainConfig) -> Path:
     return out.run_dir
 
 
-def main() -> None:
+def _build_mobile_train_preset(preset: str = "baseline_cw") -> MobileTrainConfig:
     cfg = MobileTrainConfig()
+    preset = str(preset).lower()
+
+    if preset == "baseline_cw":
+        cfg.use_distillation = False
+        cfg.use_class_weights = True
+        cfg.backbone_pretrained = True
+        cfg.exp_tag = "baseline_cw"
+        return cfg
+
+    if preset == "distill":
+        cfg.exp_tag = "distill"
+        return cfg
+
+    raise ValueError(f"Unsupported preset={preset}. Use 'baseline_cw' or 'distill'.")
+
+
+def main() -> None:
+    preset = "baseline_cw"
+    cfg = _build_mobile_train_preset(preset)
+    print(f"[INFO] preset={preset}")
     run_training(cfg)
 
 
